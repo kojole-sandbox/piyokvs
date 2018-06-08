@@ -20,22 +20,27 @@ pub enum Io {
 pub struct IoRequest {
     io: Io,
     buf: DataPtr,
-    res: Sender<io::Result<Io>>,
 }
 
 impl IoRequest {
-    pub fn new(io: Io, buf: DataPtr, res: Sender<io::Result<Io>>) -> IoRequest {
-        IoRequest { io, buf, res }
+    pub fn new(io: Io, buf: DataPtr) -> IoRequest {
+        IoRequest { io, buf }
     }
 }
 
 pub struct Storage {
     path: String,
-    io_rx: Receiver<IoRequest>,
+    req_rx: Receiver<IoRequest>,
+    res_tx: Sender<io::Result<Io>>,
 }
 
 impl Storage {
-    pub fn new(path: String, n_data: u32, io_rx: Receiver<IoRequest>) -> io::Result<Storage> {
+    pub fn new(
+        path: String,
+        n_data: u32,
+        req_rx: Receiver<IoRequest>,
+        res_tx: Sender<io::Result<Io>>,
+    ) -> io::Result<Storage> {
         assert!(n_data > 0);
 
         {
@@ -43,7 +48,11 @@ impl Storage {
             write_zeros(&mut file, (n_data as u64) * (size_of::<u64>() as u64))?;
         }
 
-        Ok(Storage { path, io_rx })
+        Ok(Storage {
+            path,
+            req_rx,
+            res_tx,
+        })
     }
 
     pub fn start(&mut self) {
@@ -51,7 +60,8 @@ impl Storage {
 
         for _ in 0..N_THREADS {
             let path = self.path.clone();
-            let io_rx = self.io_rx.clone();
+            let req_rx = self.req_rx.clone();
+            let res_tx = self.res_tx.clone();
 
             let t = thread::spawn(move || {
                 let mut file = OpenOptions::new()
@@ -60,7 +70,7 @@ impl Storage {
                     .open(path)
                     .unwrap();
 
-                for mut req in io_rx {
+                for mut req in req_rx {
                     let result = match req.io {
                         Io::Read(id) => {
                             let pos = id as u64 * size_of::<u64>() as u64;
@@ -74,7 +84,7 @@ impl Storage {
                         }
                     };
 
-                    req.res.send(result.and(Ok(req.io))).unwrap();
+                    res_tx.send(result.and(Ok(req.io))).unwrap();
                 }
             });
 
@@ -181,50 +191,147 @@ mod tests {
     }
 
     #[test]
-    fn test_storage() {
-        let (io_tx, io_rx) = bounded(0);
+    fn storage_single() {
+        let n_data: u32 = 10000;
+
+        let (req_tx, req_rx) = bounded(0);
+        let (res_tx, res_rx) = bounded(0);
 
         let storage_thread = thread::spawn(move || {
-            let mut storage = Storage::new("1.db".to_string(), 10000, io_rx).unwrap();
+            let mut storage = Storage::new("1.db".to_string(), n_data, req_rx, res_tx).unwrap();
             storage.start();
         });
 
-        let mut writers = Vec::new();
-        for i in 0..100 {
-            let io_tx = io_tx.clone();
+        {
+            let req_tx = req_tx.clone();
+            let res_rx = res_rx.clone();
+
+            for id in 0..n_data {
+                let data = id as u64;
+                let buf =
+                    unsafe { DataPtr(NonNull::new_unchecked(&data as *const u64 as *mut u64)) };
+                let req = IoRequest::new(Io::Write(id), buf);
+                req_tx.send(req).unwrap();
+                res_rx.recv().unwrap().unwrap();
+            }
+        };
+
+        for id in 0..n_data {
+            let mut data = u64::max_value();
+            let buf = unsafe { DataPtr(NonNull::new_unchecked(&mut data as *mut u64)) };
+            let req = IoRequest::new(Io::Read(id), buf);
+            req_tx.send(req).unwrap();
+            res_rx.recv().unwrap().unwrap();
+            assert_eq!(data, id as u64);
+        }
+
+        drop(req_tx);
+        storage_thread.join().unwrap();
+    }
+
+    #[test]
+    fn storage_single_nonblock() {
+        let n_data: u32 = 100;
+
+        let (req_tx, req_rx) = bounded(0);
+        let (res_tx, res_rx) = bounded(0);
+
+        let storage_thread = thread::spawn(move || {
+            let mut storage = Storage::new("2.db".to_string(), n_data, req_rx, res_tx).unwrap();
+            storage.start();
+        });
+
+        let writer = {
+            let req_tx = req_tx.clone();
+
+            thread::spawn(move || {
+                let data: Vec<u64> = (0..n_data as u64).collect();
+                for id in 0..n_data {
+                    let buf = unsafe {
+                        DataPtr(NonNull::new_unchecked(
+                            &data[id as usize] as *const u64 as *mut u64,
+                        ))
+                    };
+                    let req = IoRequest::new(Io::Write(id), buf);
+                    req_tx.send(req).unwrap();
+                }
+            })
+        };
+
+        for _ in 0..n_data {
+            res_rx.recv().unwrap().unwrap();
+        }
+        writer.join().unwrap();
+
+        for id in 0..n_data {
+            let mut data = u64::max_value();
+            let buf = unsafe { DataPtr(NonNull::new_unchecked(&mut data as *mut u64)) };
+            let req = IoRequest::new(Io::Read(id), buf);
+            req_tx.send(req).unwrap();
+            res_rx.recv().unwrap().unwrap();
+            assert_eq!(data, id as u64);
+        }
+
+        drop(req_tx);
+        storage_thread.join().unwrap();
+    }
+
+    #[test]
+    fn storage_concurrent() {
+        let n_writers: u32 = 10;
+        let n_data: u32 = 10000;
+        let n_data_per_writer = n_data / n_writers;
+
+        let (req_tx, req_rx) = bounded(0);
+        let (res_tx, res_rx) = bounded(0);
+
+        let storage_thread = thread::spawn(move || {
+            let mut storage = Storage::new("3.db".to_string(), n_data, req_rx, res_tx).unwrap();
+            storage.start();
+        });
+
+        let mut writers = Vec::with_capacity(n_writers as usize);
+        for i in 0..n_writers {
+            let req_tx = req_tx.clone();
 
             let t = thread::spawn(move || {
-                let (res_tx, res_rx) = bounded(0);
+                let data: Vec<u64> = ((i * n_data_per_writer) as u64..)
+                    .take(n_data_per_writer as usize)
+                    .collect();
 
-                for j in 0..100 {
-                    let mut data: u64 = i * 100 + j;
-                    let io = Io::Write(data as u32);
-                    let buf = DataPtr(NonNull::new(&mut data as *mut u64).unwrap());
-                    let req = IoRequest::new(io, buf, res_tx.clone());
-                    io_tx.send(req).unwrap();
-                    res_rx.recv().unwrap().unwrap();
+                for j in 0..n_data_per_writer {
+                    let id = data[j as usize] as u32;
+                    let buf = unsafe {
+                        DataPtr(NonNull::new_unchecked(
+                            &data[j as usize] as *const u64 as *mut u64,
+                        ))
+                    };
+                    let req = IoRequest::new(Io::Write(id), buf);
+                    req_tx.send(req).unwrap();
                 }
             });
 
             writers.push(t);
         }
 
+        for _ in 0..n_data {
+            res_rx.recv().unwrap().unwrap();
+        }
+
         for writer in writers {
             writer.join().unwrap();
         }
 
-        let (res_tx, res_rx) = bounded(0);
-        for id in 0u64..10000 {
-            let mut data: u64 = u64::max_value();
-            let io = Io::Read(id as u32);
-            let buf = DataPtr(NonNull::new(&mut data as *mut u64).unwrap());
-            let req = IoRequest::new(io, buf, res_tx.clone());
-            io_tx.send(req).unwrap();
+        for id in 0..n_data {
+            let mut data = u64::max_value();
+            let buf = unsafe { DataPtr(NonNull::new_unchecked(&mut data as *mut u64)) };
+            let req = IoRequest::new(Io::Read(id), buf);
+            req_tx.send(req).unwrap();
             res_rx.recv().unwrap().unwrap();
-            assert_eq!(data, id);
+            assert_eq!(data, id as u64);
         }
 
-        drop(io_tx);
+        drop(req_tx);
         storage_thread.join().unwrap();
     }
 }
