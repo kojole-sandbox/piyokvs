@@ -8,7 +8,7 @@ use std::thread;
 
 use crossbeam_channel::{Receiver, Sender};
 
-use data::DataPtr;
+use ptr::Sendable;
 
 const N_THREADS: usize = 4;
 
@@ -19,18 +19,18 @@ pub enum Io {
 
 pub struct IoRequest {
     io: Io,
-    ptr: DataPtr,
+    ptr: Sendable<u64>,
 }
 
 impl IoRequest {
-    pub fn read(id: u32, ptr: DataPtr) -> IoRequest {
+    pub fn read(id: u32, ptr: Sendable<u64>) -> IoRequest {
         IoRequest {
             io: Io::Read(id),
             ptr,
         }
     }
 
-    pub fn write(id: u32, ptr: DataPtr) -> IoRequest {
+    pub fn write(id: u32, ptr: Sendable<u64>) -> IoRequest {
         IoRequest {
             io: Io::Write(id),
             ptr,
@@ -227,7 +227,7 @@ mod tests {
 
             for id in 0..n_data {
                 let data = id as u64;
-                let ptr = DataPtr::new(&data);
+                let ptr = Sendable::new(&data);
                 let req = IoRequest::write(id, ptr);
                 req_tx.send(req).unwrap();
                 assert!(res_rx.recv().unwrap().result.is_ok());
@@ -236,7 +236,7 @@ mod tests {
 
         for id in 0..n_data {
             let mut data = u64::max_value();
-            let ptr = DataPtr::new(&mut data);
+            let ptr = Sendable::new(&mut data);
             let req = IoRequest::read(id, ptr);
             req_tx.send(req).unwrap();
             assert!(res_rx.recv().unwrap().result.is_ok());
@@ -265,7 +265,7 @@ mod tests {
             thread::spawn(move || {
                 let data: Vec<u64> = (0..n_data as u64).collect();
                 for id in 0..n_data {
-                    let ptr = DataPtr::new(&data[id as usize]);
+                    let ptr = Sendable::new(&data[id as usize]);
                     let req = IoRequest::write(id, ptr);
                     req_tx.send(req).unwrap();
                 }
@@ -279,7 +279,7 @@ mod tests {
 
         for id in 0..n_data {
             let mut data = u64::max_value();
-            let ptr = DataPtr::new(&mut data);
+            let ptr = Sendable::new(&mut data);
             let req = IoRequest::read(id, ptr);
             req_tx.send(req).unwrap();
             assert!(res_rx.recv().unwrap().result.is_ok());
@@ -315,7 +315,7 @@ mod tests {
 
                 for j in 0..n_data_per_writer {
                     let id = data[j as usize] as u32;
-                    let ptr = DataPtr::new(&data[j as usize]);
+                    let ptr = Sendable::new(&data[j as usize]);
                     let req = IoRequest::write(id, ptr);
                     req_tx.send(req).unwrap();
                 }
@@ -334,7 +334,7 @@ mod tests {
 
         for id in 0..n_data {
             let mut data = u64::max_value();
-            let ptr = DataPtr::new(&mut data);
+            let ptr = Sendable::new(&mut data);
             let req = IoRequest::read(id, ptr);
             req_tx.send(req).unwrap();
             assert!(res_rx.recv().unwrap().result.is_ok());
