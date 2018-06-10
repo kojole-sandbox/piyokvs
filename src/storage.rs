@@ -8,7 +8,7 @@ use std::thread;
 
 use crossbeam_channel::{Receiver, Sender};
 
-use buffer::DataPtr;
+use data::DataPtr;
 
 const N_THREADS: usize = 4;
 
@@ -19,12 +19,22 @@ pub enum Io {
 
 pub struct IoRequest {
     io: Io,
-    buf: DataPtr,
+    ptr: DataPtr,
 }
 
 impl IoRequest {
-    pub fn new(io: Io, buf: DataPtr) -> IoRequest {
-        IoRequest { io, buf }
+    pub fn read(id: u32, ptr: DataPtr) -> IoRequest {
+        IoRequest {
+            io: Io::Read(id),
+            ptr,
+        }
+    }
+
+    pub fn write(id: u32, ptr: DataPtr) -> IoRequest {
+        IoRequest {
+            io: Io::Write(id),
+            ptr,
+        }
     }
 }
 
@@ -85,13 +95,11 @@ impl Storage {
                     let result = match req.io {
                         Io::Read(id) => {
                             let pos = id as u64 * size_of::<u64>() as u64;
-                            let dst = unsafe { req.buf.0.as_mut() } as *mut u64;
-                            read_at(&mut file, pos, dst)
+                            read_at(&mut file, pos, req.ptr.as_mut())
                         }
                         Io::Write(id) => {
                             let pos = id as u64 * size_of::<u64>() as u64;
-                            let src = unsafe { req.buf.0.as_ref() } as *const u64;
-                            write_at(&mut file, pos, src)
+                            write_at(&mut file, pos, req.ptr.as_ref())
                         }
                     };
 
@@ -165,7 +173,6 @@ where
 #[cfg(test)]
 mod tests {
     use std::io::Cursor;
-    use std::ptr::NonNull;
 
     use crossbeam_channel::bounded;
 
@@ -220,9 +227,8 @@ mod tests {
 
             for id in 0..n_data {
                 let data = id as u64;
-                let buf =
-                    unsafe { DataPtr(NonNull::new_unchecked(&data as *const u64 as *mut u64)) };
-                let req = IoRequest::new(Io::Write(id), buf);
+                let ptr = DataPtr::new(&data);
+                let req = IoRequest::write(id, ptr);
                 req_tx.send(req).unwrap();
                 assert!(res_rx.recv().unwrap().result.is_ok());
             }
@@ -230,8 +236,8 @@ mod tests {
 
         for id in 0..n_data {
             let mut data = u64::max_value();
-            let buf = unsafe { DataPtr(NonNull::new_unchecked(&mut data as *mut u64)) };
-            let req = IoRequest::new(Io::Read(id), buf);
+            let ptr = DataPtr::new(&mut data);
+            let req = IoRequest::read(id, ptr);
             req_tx.send(req).unwrap();
             assert!(res_rx.recv().unwrap().result.is_ok());
             assert_eq!(data, id as u64);
@@ -259,12 +265,8 @@ mod tests {
             thread::spawn(move || {
                 let data: Vec<u64> = (0..n_data as u64).collect();
                 for id in 0..n_data {
-                    let buf = unsafe {
-                        DataPtr(NonNull::new_unchecked(
-                            &data[id as usize] as *const u64 as *mut u64,
-                        ))
-                    };
-                    let req = IoRequest::new(Io::Write(id), buf);
+                    let ptr = DataPtr::new(&data[id as usize]);
+                    let req = IoRequest::write(id, ptr);
                     req_tx.send(req).unwrap();
                 }
             })
@@ -277,8 +279,8 @@ mod tests {
 
         for id in 0..n_data {
             let mut data = u64::max_value();
-            let buf = unsafe { DataPtr(NonNull::new_unchecked(&mut data as *mut u64)) };
-            let req = IoRequest::new(Io::Read(id), buf);
+            let ptr = DataPtr::new(&mut data);
+            let req = IoRequest::read(id, ptr);
             req_tx.send(req).unwrap();
             assert!(res_rx.recv().unwrap().result.is_ok());
             assert_eq!(data, id as u64);
@@ -313,12 +315,8 @@ mod tests {
 
                 for j in 0..n_data_per_writer {
                     let id = data[j as usize] as u32;
-                    let buf = unsafe {
-                        DataPtr(NonNull::new_unchecked(
-                            &data[j as usize] as *const u64 as *mut u64,
-                        ))
-                    };
-                    let req = IoRequest::new(Io::Write(id), buf);
+                    let ptr = DataPtr::new(&data[j as usize]);
+                    let req = IoRequest::write(id, ptr);
                     req_tx.send(req).unwrap();
                 }
             });
@@ -336,8 +334,8 @@ mod tests {
 
         for id in 0..n_data {
             let mut data = u64::max_value();
-            let buf = unsafe { DataPtr(NonNull::new_unchecked(&mut data as *mut u64)) };
-            let req = IoRequest::new(Io::Read(id), buf);
+            let ptr = DataPtr::new(&mut data);
+            let req = IoRequest::read(id, ptr);
             req_tx.send(req).unwrap();
             assert!(res_rx.recv().unwrap().result.is_ok());
             assert_eq!(data, id as u64);

@@ -4,10 +4,6 @@ use std::ptr::NonNull;
 
 use crossbeam_channel::{Receiver, Sender};
 
-#[derive(Copy, Clone)]
-pub struct DataPtr(pub NonNull<u64>);
-
-unsafe impl Send for DataPtr {}
 
 enum Lock {
     Lock(usize),
