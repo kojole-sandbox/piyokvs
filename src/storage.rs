@@ -23,16 +23,16 @@ pub struct IoRequest {
 }
 
 impl IoRequest {
-    pub fn read(id: u32, ptr: Sendable<u64>) -> IoRequest {
+    pub fn read(key: u32, ptr: Sendable<u64>) -> IoRequest {
         IoRequest {
-            io: Io::Read(id),
+            io: Io::Read(key),
             ptr,
         }
     }
 
-    pub fn write(id: u32, ptr: Sendable<u64>) -> IoRequest {
+    pub fn write(key: u32, ptr: Sendable<u64>) -> IoRequest {
         IoRequest {
-            io: Io::Write(id),
+            io: Io::Write(key),
             ptr,
         }
     }
@@ -93,12 +93,12 @@ impl Storage {
 
                 for mut req in req_rx {
                     let result = match req.io {
-                        Io::Read(id) => {
-                            let pos = id as u64 * size_of::<u64>() as u64;
+                        Io::Read(key) => {
+                            let pos = key as u64 * size_of::<u64>() as u64;
                             read_at(&mut file, pos, req.ptr.as_mut())
                         }
-                        Io::Write(id) => {
-                            let pos = id as u64 * size_of::<u64>() as u64;
+                        Io::Write(key) => {
+                            let pos = key as u64 * size_of::<u64>() as u64;
                             write_at(&mut file, pos, req.ptr.as_ref())
                         }
                     };
@@ -225,22 +225,22 @@ mod tests {
             let req_tx = req_tx.clone();
             let res_rx = res_rx.clone();
 
-            for id in 0..n_data {
-                let data = id as u64;
+            for key in 0..n_data {
+                let data = key as u64;
                 let ptr = Sendable::new(&data);
-                let req = IoRequest::write(id, ptr);
+                let req = IoRequest::write(key, ptr);
                 req_tx.send(req).unwrap();
                 assert!(res_rx.recv().unwrap().result.is_ok());
             }
         };
 
-        for id in 0..n_data {
+        for key in 0..n_data {
             let mut data = u64::max_value();
             let ptr = Sendable::new(&mut data);
-            let req = IoRequest::read(id, ptr);
+            let req = IoRequest::read(key, ptr);
             req_tx.send(req).unwrap();
             assert!(res_rx.recv().unwrap().result.is_ok());
-            assert_eq!(data, id as u64);
+            assert_eq!(data, key as u64);
         }
 
         drop(req_tx);
@@ -264,9 +264,9 @@ mod tests {
 
             thread::spawn(move || {
                 let data: Vec<u64> = (0..n_data as u64).collect();
-                for id in 0..n_data {
-                    let ptr = Sendable::new(&data[id as usize]);
-                    let req = IoRequest::write(id, ptr);
+                for key in 0..n_data {
+                    let ptr = Sendable::new(&data[key as usize]);
+                    let req = IoRequest::write(key, ptr);
                     req_tx.send(req).unwrap();
                 }
             })
@@ -277,13 +277,13 @@ mod tests {
         }
         writer.join().unwrap();
 
-        for id in 0..n_data {
+        for key in 0..n_data {
             let mut data = u64::max_value();
             let ptr = Sendable::new(&mut data);
-            let req = IoRequest::read(id, ptr);
+            let req = IoRequest::read(key, ptr);
             req_tx.send(req).unwrap();
             assert!(res_rx.recv().unwrap().result.is_ok());
-            assert_eq!(data, id as u64);
+            assert_eq!(data, key as u64);
         }
 
         drop(req_tx);
@@ -314,9 +314,9 @@ mod tests {
                     .collect();
 
                 for j in 0..n_data_per_writer {
-                    let id = data[j as usize] as u32;
+                    let key = data[j as usize] as u32;
                     let ptr = Sendable::new(&data[j as usize]);
-                    let req = IoRequest::write(id, ptr);
+                    let req = IoRequest::write(key, ptr);
                     req_tx.send(req).unwrap();
                 }
             });
@@ -332,13 +332,13 @@ mod tests {
             writer.join().unwrap();
         }
 
-        for id in 0..n_data {
+        for key in 0..n_data {
             let mut data = u64::max_value();
             let ptr = Sendable::new(&mut data);
-            let req = IoRequest::read(id, ptr);
+            let req = IoRequest::read(key, ptr);
             req_tx.send(req).unwrap();
             assert!(res_rx.recv().unwrap().result.is_ok());
-            assert_eq!(data, id as u64);
+            assert_eq!(data, key as u64);
         }
 
         drop(req_tx);
