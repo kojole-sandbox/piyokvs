@@ -28,10 +28,21 @@ impl IoRequest {
     }
 }
 
+pub struct IoResponse {
+    pub io: Io,
+    pub result: io::Result<()>,
+}
+
+impl IoResponse {
+    fn new(io: Io, result: io::Result<()>) -> IoResponse {
+        IoResponse { io, result }
+    }
+}
+
 pub struct Storage {
     path: String,
     req_rx: Receiver<IoRequest>,
-    res_tx: Sender<io::Result<Io>>,
+    res_tx: Sender<IoResponse>,
 }
 
 impl Storage {
@@ -39,7 +50,7 @@ impl Storage {
         path: String,
         n_data: u32,
         req_rx: Receiver<IoRequest>,
-        res_tx: Sender<io::Result<Io>>,
+        res_tx: Sender<IoResponse>,
     ) -> io::Result<Storage> {
         assert!(n_data > 0);
 
@@ -84,7 +95,8 @@ impl Storage {
                         }
                     };
 
-                    res_tx.send(result.and(Ok(req.io))).unwrap();
+                    let response = IoResponse::new(req.io, result);
+                    res_tx.send(response).unwrap();
                 }
             });
 
@@ -212,7 +224,7 @@ mod tests {
                     unsafe { DataPtr(NonNull::new_unchecked(&data as *const u64 as *mut u64)) };
                 let req = IoRequest::new(Io::Write(id), buf);
                 req_tx.send(req).unwrap();
-                res_rx.recv().unwrap().unwrap();
+                assert!(res_rx.recv().unwrap().result.is_ok());
             }
         };
 
@@ -221,7 +233,7 @@ mod tests {
             let buf = unsafe { DataPtr(NonNull::new_unchecked(&mut data as *mut u64)) };
             let req = IoRequest::new(Io::Read(id), buf);
             req_tx.send(req).unwrap();
-            res_rx.recv().unwrap().unwrap();
+            assert!(res_rx.recv().unwrap().result.is_ok());
             assert_eq!(data, id as u64);
         }
 
@@ -259,7 +271,7 @@ mod tests {
         };
 
         for _ in 0..n_data {
-            res_rx.recv().unwrap().unwrap();
+            assert!(res_rx.recv().unwrap().result.is_ok());
         }
         writer.join().unwrap();
 
@@ -268,7 +280,7 @@ mod tests {
             let buf = unsafe { DataPtr(NonNull::new_unchecked(&mut data as *mut u64)) };
             let req = IoRequest::new(Io::Read(id), buf);
             req_tx.send(req).unwrap();
-            res_rx.recv().unwrap().unwrap();
+            assert!(res_rx.recv().unwrap().result.is_ok());
             assert_eq!(data, id as u64);
         }
 
@@ -315,7 +327,7 @@ mod tests {
         }
 
         for _ in 0..n_data {
-            res_rx.recv().unwrap().unwrap();
+            assert!(res_rx.recv().unwrap().result.is_ok());
         }
 
         for writer in writers {
@@ -327,7 +339,7 @@ mod tests {
             let buf = unsafe { DataPtr(NonNull::new_unchecked(&mut data as *mut u64)) };
             let req = IoRequest::new(Io::Read(id), buf);
             req_tx.send(req).unwrap();
-            res_rx.recv().unwrap().unwrap();
+            assert!(res_rx.recv().unwrap().result.is_ok());
             assert_eq!(data, id as u64);
         }
 
