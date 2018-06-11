@@ -217,7 +217,8 @@ mod tests {
         let (res_tx, res_rx) = bounded(0);
 
         let storage_thread = thread::spawn(move || {
-            let mut storage = Storage::new("1.db".to_string(), n_data, req_rx, res_tx).unwrap();
+            let mut storage =
+                Storage::new("tmp/storage_1.db".to_string(), n_data, req_rx, res_tx).unwrap();
             storage.start();
         });
 
@@ -255,7 +256,8 @@ mod tests {
         let (res_tx, res_rx) = bounded(0);
 
         let storage_thread = thread::spawn(move || {
-            let mut storage = Storage::new("2.db".to_string(), n_data, req_rx, res_tx).unwrap();
+            let mut storage =
+                Storage::new("tmp/storage_2.db".to_string(), n_data, req_rx, res_tx).unwrap();
             storage.start();
         });
 
@@ -300,7 +302,8 @@ mod tests {
         let (res_tx, res_rx) = bounded(0);
 
         let storage_thread = thread::spawn(move || {
-            let mut storage = Storage::new("3.db".to_string(), n_data, req_rx, res_tx).unwrap();
+            let mut storage =
+                Storage::new("tmp/storage_3.db".to_string(), n_data, req_rx, res_tx).unwrap();
             storage.start();
         });
 
