@@ -1,3 +1,4 @@
+use std::cell::{Ref, RefCell, RefMut};
 use std::cmp::Eq;
 use std::collections::{HashMap, VecDeque};
 use std::hash::Hash;
@@ -23,7 +24,7 @@ where
 }
 
 struct CacheEntry<K, V> {
-    inner: Entry<K, V>,
+    inner: RefCell<Entry<K, V>>,
     next: Option<usize>,
     prev: Option<usize>,
     evicting: bool,
@@ -35,7 +36,7 @@ where
 {
     fn new(key: K) -> CacheEntry<K, V> {
         CacheEntry {
-            inner: Entry::new(key),
+            inner: RefCell::new(Entry::new(key)),
             next: None,
             prev: None,
             evicting: false,
@@ -74,8 +75,12 @@ where
         }
     }
 
+    pub fn contains(&self, key: K) -> bool {
+        self.keys.contains_key(&key)
+    }
+
     /// Return new entry of the id and one to be evicted
-    pub fn get_with_evicting(&mut self, key: K) -> (&Entry<K, V>, Option<&Entry<K, V>>) {
+    pub fn get_with_evicting(&mut self, key: K) -> (RefMut<Entry<K, V>>, Option<Ref<Entry<K, V>>>) {
         assert!(!self.keys.contains_key(&key));
 
         let new_i = self.entry_new(key);
@@ -91,21 +96,18 @@ where
 
         if let Some(evicting_i) = evicting_i {
             (
-                &self.entries[new_i].inner,
-                Some(&self.entries[evicting_i].inner),
+                self.entries[new_i].inner.borrow_mut(),
+                Some(self.entries[evicting_i].inner.borrow()),
             )
         } else {
-            (&self.entries[new_i].inner, None)
+            (self.entries[new_i].inner.borrow_mut(), None)
         }
     }
 
-    /// Return entry of the id without touching if exists
-    pub fn get_untouched(&mut self, key: K) -> Option<&Entry<K, V>> {
-        if let Some(i) = self.keys.get(&key) {
-            Some(&self.entries[*i].inner)
-        } else {
-            None
-        }
+    /// Return entry of the id without touching
+    pub fn get_untouched(&self, key: K) -> RefMut<Entry<K, V>> {
+        let i = *self.keys.get(&key).unwrap();
+        self.entries[i].inner.borrow_mut()
     }
 
     pub fn touch(&mut self, key: K) {
@@ -121,9 +123,9 @@ where
     }
 
     /// Return next evicting entry
-    pub fn evicting_new(&mut self) -> &Entry<K, V> {
+    pub fn evicting_new(&mut self) -> Ref<Entry<K, V>> {
         if let Some(i) = self.reclaim() {
-            &self.entries[i].inner
+            self.entries[i].inner.borrow()
         } else {
             panic!("cannot evict");
         }
@@ -146,7 +148,7 @@ where
         } else if len == self.capacity {
             // Reuse evicted entry
             if let Some(i) = self.evicted_indices.pop_front() {
-                self.entries[i].inner = Entry::new(key);
+                *self.entries[i].inner.borrow_mut() = Entry::new(key);
                 return i;
             }
         }
@@ -213,7 +215,7 @@ impl<'a, K, V> LruIterator<'a, K, V> {
 }
 
 impl<'a, K, V> Iterator for LruIterator<'a, K, V> {
-    type Item = &'a Entry<K, V>;
+    type Item = &'a RefCell<Entry<K, V>>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if let Some(i) = self.pos {
@@ -234,7 +236,7 @@ mod tests {
     }
 
     fn lru_keys<K: Copy, V>(cache: &Cache<K, V>) -> Vec<K> {
-        LruIterator::new(cache).map(|entry| entry.key).collect()
+        LruIterator::new(cache).map(|r| r.borrow().key).collect()
     }
 
     #[test]
@@ -268,7 +270,7 @@ mod tests {
         let mut evicted_keys = Vec::new();
 
         for key in input_keys {
-            if cache.get_untouched(*key).is_some() {
+            if cache.contains(*key) {
                 cache.touch(*key);
                 continue;
             }
@@ -296,7 +298,7 @@ mod tests {
         let mut evicted_keys = Vec::new();
 
         for key in input_keys {
-            if cache.get_untouched(*key).is_some() {
+            if cache.contains(*key) {
                 cache.touch(*key);
                 continue;
             }
@@ -324,7 +326,7 @@ mod tests {
         let mut evicted_keys = Vec::new();
 
         for key in input_keys {
-            if cache.get_untouched(*key).is_some() {
+            if cache.contains(*key) {
                 cache.touch(*key);
                 continue;
             }
