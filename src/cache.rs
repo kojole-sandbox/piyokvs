@@ -202,6 +202,7 @@ where
                 }
 
                 // Otherwise treat it as evicted
+                self.keys.remove(&self.entries[i].inner.borrow().key);
                 self.unlink(i);
                 self.evicted_indices.push_back(i);
                 return None;
