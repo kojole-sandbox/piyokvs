@@ -2,32 +2,31 @@ use crossbeam_channel::{bounded, Sender};
 use rand::distributions::Uniform;
 use rand::{thread_rng, Rng};
 
-use buffer::Request;
+use buffer::DataRequest;
 
 pub struct Client {
-    req_tx: Sender<Request>,
+    req_tx: Sender<DataRequest>,
 }
 
 impl Client {
-    pub fn new(req_tx: Sender<Request>) -> Client {
+    pub fn new(req_tx: Sender<DataRequest>) -> Client {
         Client { req_tx }
     }
 
-    pub fn start(&self, n: usize) {
-        let (res_tx, res_rx) = bounded(0);
-        let u = Uniform::new(0usize, 10);
+    pub fn start(&self, n_data: u32, n_increments: usize) {
+        let u = Uniform::new(0, n_data);
 
-        for id in thread_rng().sample_iter(&u).take(n) {
-            let req = Request::lock(id, res_tx.clone());
-            self.req_tx.send(req).unwrap();
+        for key in thread_rng().sample_iter(&u).take(n_increments) {
+            let (res_tx, res_rx) = bounded(0);
+            let req = DataRequest::lock(key, res_tx);
+            self.req_tx.send(req);
 
-            let mut data_wrapper = res_rx.recv().unwrap();
-            unsafe {
-                *data_wrapper.0.as_mut() += 1;
-            }
+            let mut res = res_rx.recv().unwrap();
+            let entry = res.as_mut();
+            entry.dirty = true;
+            entry.value += 1;
 
-            let req = Request::unlock(id);
-            self.req_tx.send(req).unwrap();
+            self.req_tx.send(DataRequest::unlock(key));
         }
     }
 }

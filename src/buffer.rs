@@ -58,7 +58,16 @@ impl Buffer {
 
     pub fn start(&mut self, data_req_rx: Receiver<DataRequest>, io_res_rx: Receiver<IoResponse>) {
         'main: loop {
+            // Handle available I/O responses first
+            'handle_io: loop {
+                select! {
+                    recv(io_res_rx, io_res) => self.handle_io_res(io_res.unwrap()),
+                    default => break 'handle_io,
+                }
+            }
+
             select! {
+                recv(io_res_rx, io_res) => self.handle_io_res(io_res.unwrap()),
                 recv(data_req_rx, client_req) => {
                     if let Some(req) = client_req {
                         self.handle_data_req(req);
@@ -67,7 +76,6 @@ impl Buffer {
                         break 'main;
                     }
                 }
-                recv(io_res_rx, io_res) => self.handle_io_res(io_res.unwrap()),
             }
         }
 
@@ -104,14 +112,14 @@ impl Buffer {
                         // The entry is not in cache.
                         let (entry, evicting) = self.cache.get_with_evicting(key);
 
-                        // Read the entry from storage
-                        let req = IoRequest::read(key, Sendable::new(&entry.value));
-                        self.io_req_tx.send(req);
-
-                        // Evict old entry
+                        // Evict old entry first
                         if let Some(evicting) = evicting {
                             request_eviction(&mut self.data_res_queues, &evicting, &self.io_req_tx);
                         }
+
+                        // Read the entry from storage
+                        let req = IoRequest::read(key, Sendable::new(&entry.value));
+                        self.io_req_tx.send(req);
                     }
                 } else {
                     // Assume that the entry is in cache
