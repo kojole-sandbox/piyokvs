@@ -1,16 +1,16 @@
 extern crate crossbeam_channel;
 extern crate rand;
 
-extern crate fakedb;
+extern crate piyokvs;
 
 use std::thread;
 
 use crossbeam_channel::{bounded, unbounded};
 use rand::{thread_rng, Rng};
 
-use fakedb::buffer::{Buffer, DataRequest};
-use fakedb::client::Client;
-use fakedb::storage::Storage;
+use piyokvs::buffer::{Buffer, DataRequest};
+use piyokvs::client::Client;
+use piyokvs::storage::Storage;
 
 #[test]
 fn random_increments() {
