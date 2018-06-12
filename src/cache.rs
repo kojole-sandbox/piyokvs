@@ -186,13 +186,25 @@ where
         self.head = new_head;
     }
 
-    /// Return next evicting entry index while marking the entry as evicting
+    /// Reclaim one entry space
+    ///
+    /// If the entry in question is dirty, mark as evicting and return it.
+    /// Otherwise treat it as evicted.
     fn reclaim(&mut self) -> Option<usize> {
         let mut pos = self.tail;
         while let Some(i) = pos {
+            // Find first entry which is not marked as evicting
             if !self.entries[i].evicting {
-                self.entries[i].evicting = true;
-                return Some(i);
+                // If it's dirty, mark as evicting and return it
+                if self.entries[i].inner.borrow().dirty {
+                    self.entries[i].evicting = true;
+                    return Some(i);
+                }
+
+                // Otherwise treat it as evicted
+                self.unlink(i);
+                self.evicted_indices.push_back(i);
+                return None;
             }
             pos = self.entries[i].prev;
         }
@@ -231,12 +243,55 @@ impl<'a, K, V> Iterator for LruIterator<'a, K, V> {
 mod tests {
     use super::*;
 
+    fn lru_keys<K: Copy, V>(cache: &Cache<K, V>) -> Vec<K> {
+        LruIterator::new(cache).map(|r| r.borrow().key).collect()
+    }
+
     fn default_cache() -> Cache<usize, bool> {
         Cache::new(4, 1)
     }
 
-    fn lru_keys<K: Copy, V>(cache: &Cache<K, V>) -> Vec<K> {
-        LruIterator::new(cache).map(|r| r.borrow().key).collect()
+    fn get(cache: &mut Cache<usize, bool>, key: usize) -> Option<usize> {
+        let (_, evicting) = cache.get_with_evicting(key);
+        evicting.map(|e| e.key)
+    }
+
+    fn set(cache: &mut Cache<usize, bool>, key: usize) -> Option<usize> {
+        let (mut entry, evicting) = cache.get_with_evicting(key);
+        entry.dirty = true;
+        entry.value = true;
+        evicting.map(|e| e.key)
+    }
+
+    /// Update cahce with `input_keys` and return evicted keys
+    fn update_cache(cache: &mut Cache<usize, bool>, input_keys: &[usize]) -> Vec<usize> {
+        let mut evicted_keys = Vec::new();
+
+        for key in input_keys {
+            if cache.contains(*key) {
+                cache.touch(*key);
+                continue;
+            }
+
+            if let Some(key) = set(cache, *key) {
+                cache.evicting_done(key);
+                evicted_keys.push(key);
+            }
+        }
+
+        evicted_keys
+    }
+
+    #[test]
+    fn no_evict() {
+        let mut cache = default_cache();
+
+        let input_keys = &[0, 1, 2, 3, 4, 5, 6];
+        for key in input_keys {
+            assert!(get(&mut cache, *key).is_none());
+        }
+
+        assert_eq!(lru_keys(&cache), [4, 5, 6]);
     }
 
     #[test]
@@ -244,19 +299,7 @@ mod tests {
         let mut cache = default_cache();
 
         let input_keys = &[0, 1, 2, 3, 4, 5, 6];
-        let mut evicted_keys = Vec::new();
-
-        for key in input_keys {
-            let evicting_key = match cache.get_with_evicting(*key) {
-                (_, Some(evicting)) => Some(evicting.key),
-                _ => None,
-            };
-
-            if let Some(key) = evicting_key {
-                cache.evicting_done(key);
-                evicted_keys.push(key);
-            }
-        }
+        let evicted_keys = update_cache(&mut cache, input_keys);
 
         assert_eq!(evicted_keys, [0, 1, 2, 3]);
         assert_eq!(lru_keys(&cache), [4, 5, 6]);
@@ -267,24 +310,7 @@ mod tests {
         let mut cache = default_cache();
 
         let input_keys = &[0, 1, 2, 3, 3, 4, 5, 6];
-        let mut evicted_keys = Vec::new();
-
-        for key in input_keys {
-            if cache.contains(*key) {
-                cache.touch(*key);
-                continue;
-            }
-
-            let evicting_key = match cache.get_with_evicting(*key) {
-                (_, Some(evicting)) => Some(evicting.key),
-                _ => None,
-            };
-
-            if let Some(key) = evicting_key {
-                cache.evicting_done(key);
-                evicted_keys.push(key);
-            }
-        }
+        let evicted_keys = update_cache(&mut cache, input_keys);
 
         assert_eq!(evicted_keys, [0, 1, 2, 3]);
         assert_eq!(lru_keys(&cache), [4, 5, 6]);
@@ -295,24 +321,7 @@ mod tests {
         let mut cache = default_cache();
 
         let input_keys = &[0, 1, 2, 3, 2, 4, 5, 6];
-        let mut evicted_keys = Vec::new();
-
-        for key in input_keys {
-            if cache.contains(*key) {
-                cache.touch(*key);
-                continue;
-            }
-
-            let evicting_key = match cache.get_with_evicting(*key) {
-                (_, Some(evicting)) => Some(evicting.key),
-                _ => None,
-            };
-
-            if let Some(key) = evicting_key {
-                cache.evicting_done(key);
-                evicted_keys.push(key);
-            }
-        }
+        let evicted_keys = update_cache(&mut cache, input_keys);
 
         assert_eq!(evicted_keys, [0, 1, 3, 2]);
         assert_eq!(lru_keys(&cache), [4, 5, 6]);
@@ -323,24 +332,7 @@ mod tests {
         let mut cache = default_cache();
 
         let input_keys = &[0, 1, 2, 3, 1, 4, 5, 6];
-        let mut evicted_keys = Vec::new();
-
-        for key in input_keys {
-            if cache.contains(*key) {
-                cache.touch(*key);
-                continue;
-            }
-
-            let evicting_key = match cache.get_with_evicting(*key) {
-                (_, Some(evicting)) => Some(evicting.key),
-                _ => None,
-            };
-
-            if let Some(key) = evicting_key {
-                cache.evicting_done(key);
-                evicted_keys.push(key);
-            }
-        }
+        let evicted_keys = update_cache(&mut cache, input_keys);
 
         assert_eq!(evicted_keys, [0, 2, 3, 1]);
         assert_eq!(lru_keys(&cache), [4, 5, 6]);
@@ -350,14 +342,11 @@ mod tests {
     fn touch_evicting() {
         let mut cache = default_cache();
 
-        cache.get_with_evicting(0);
-        cache.get_with_evicting(1);
-        cache.get_with_evicting(2);
+        assert!(set(&mut cache, 0).is_none());
+        assert!(set(&mut cache, 1).is_none());
+        assert!(set(&mut cache, 2).is_none());
 
-        let evicting_key = {
-            let (_, evicting) = cache.get_with_evicting(3);
-            evicting.unwrap().key
-        };
+        let evicting_key = set(&mut cache, 3).unwrap();
         assert_eq!(evicting_key, 0);
 
         let i = *cache.keys.get(&evicting_key).unwrap();
@@ -370,10 +359,7 @@ mod tests {
         assert_eq!(key, 1);
         cache.evicting_done(key);
 
-        let evicting_key = {
-            let (_, evicting) = cache.get_with_evicting(4);
-            evicting.unwrap().key
-        };
+        let evicting_key = set(&mut cache, 4).unwrap();
         assert_eq!(evicting_key, 2);
         cache.evicting_done(evicting_key);
 
