@@ -87,12 +87,12 @@ where
         self.keys.insert(key, new_i);
         self.push_front(new_i);
 
-        let evicting_i =
-            if self.entries.len() == self.capacity && self.evicted_indices.len() < self.threshold {
-                self.reclaim()
-            } else {
-                None
-            };
+        let n_free_entries = self.capacity - self.entries.len() + self.evicted_indices.len();
+        let evicting_i = if n_free_entries < self.threshold {
+            self.reclaim()
+        } else {
+            None
+        };
 
         if let Some(evicting_i) = evicting_i {
             (
