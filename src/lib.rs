@@ -1,6 +1,6 @@
 #![feature(integer_atomics)]
 
-#[macro_use(select_loop)]
+#[macro_use]
 extern crate crossbeam_channel;
 extern crate rand;
 

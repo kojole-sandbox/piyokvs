@@ -56,7 +56,7 @@ mod tests {
             *ptr.as_mut() = 42;
         });
 
-        tx.send(Sendable::new(&data)).unwrap();
+        tx.send(Sendable::new(&data));
         t.join().unwrap();
 
         assert_eq!(data, 42);

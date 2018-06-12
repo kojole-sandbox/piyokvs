@@ -107,7 +107,7 @@ impl Storage {
                     };
 
                     let response = IoResponse::new(req.io, result);
-                    res_tx.send(response).unwrap();
+                    res_tx.send(response);
                 }
             });
 
@@ -214,14 +214,12 @@ pub(crate) mod mock {
                         match req.io {
                             Io::Read(key) => {
                                 *req.ptr.as_mut() = data[key as usize].load(Ordering::Relaxed);
-                                // data.lock().unwrap()[key as usize];
                             }
                             Io::Write(key) => {
                                 data[key as usize].store(*req.ptr.as_ref(), Ordering::Relaxed);
-                                // data.lock().unwrap()[key as usize] = *req.ptr.as_ref();
                             }
                         }
-                        res_tx.send(IoResponse::new(req.io, Ok(()))).unwrap();
+                        res_tx.send(IoResponse::new(req.io, Ok(())));
                     }
                 });
 
@@ -267,12 +265,12 @@ pub(crate) mod mock {
                 let data = key as u64;
                 let ptr = Sendable::new(&data);
                 let req = IoRequest::write(key, ptr);
-                req_tx.send(req).unwrap();
+                req_tx.send(req);
                 assert!(res_rx.recv().unwrap().result.is_ok());
             }
 
-            req_tx.disconnect();
-            res_rx.disconnect();
+            drop(req_tx);
+            drop(res_rx);
             storage_thread.join().unwrap();
 
             for key in 0..n_data {
@@ -307,14 +305,14 @@ pub(crate) mod mock {
                 for key in 0..n_data {
                     let ptr = Sendable::new(&data[key as usize]);
                     let req = IoRequest::write(key, ptr);
-                    req_tx.send(req).unwrap();
+                    req_tx.send(req);
                 }
             });
 
             for _ in 0..n_data {
                 assert!(res_rx.recv().unwrap().result.is_ok());
             }
-            res_rx.disconnect();
+            drop(res_rx);
 
             writer.join().unwrap();
             storage_thread.join().unwrap();
@@ -386,7 +384,7 @@ mod tests {
                 let data = key as u64;
                 let ptr = Sendable::new(&data);
                 let req = IoRequest::write(key, ptr);
-                req_tx.send(req).unwrap();
+                req_tx.send(req);
                 assert!(res_rx.recv().unwrap().result.is_ok());
             }
         };
@@ -395,7 +393,7 @@ mod tests {
             let mut data = u64::max_value();
             let ptr = Sendable::new(&mut data);
             let req = IoRequest::read(key, ptr);
-            req_tx.send(req).unwrap();
+            req_tx.send(req);
             assert!(res_rx.recv().unwrap().result.is_ok());
             assert_eq!(data, key as u64);
         }
@@ -425,7 +423,7 @@ mod tests {
                 for key in 0..n_data {
                     let ptr = Sendable::new(&data[key as usize]);
                     let req = IoRequest::write(key, ptr);
-                    req_tx.send(req).unwrap();
+                    req_tx.send(req);
                 }
             })
         };
@@ -439,7 +437,7 @@ mod tests {
             let mut data = u64::max_value();
             let ptr = Sendable::new(&mut data);
             let req = IoRequest::read(key, ptr);
-            req_tx.send(req).unwrap();
+            req_tx.send(req);
             assert!(res_rx.recv().unwrap().result.is_ok());
             assert_eq!(data, key as u64);
         }
@@ -476,7 +474,7 @@ mod tests {
                     let key = data[j as usize] as u32;
                     let ptr = Sendable::new(&data[j as usize]);
                     let req = IoRequest::write(key, ptr);
-                    req_tx.send(req).unwrap();
+                    req_tx.send(req);
                 }
             });
 
@@ -495,7 +493,7 @@ mod tests {
             let mut data = u64::max_value();
             let ptr = Sendable::new(&mut data);
             let req = IoRequest::read(key, ptr);
-            req_tx.send(req).unwrap();
+            req_tx.send(req);
             assert!(res_rx.recv().unwrap().result.is_ok());
             assert_eq!(data, key as u64);
         }
