@@ -1,5 +1,6 @@
 use std::ptr::NonNull;
 
+#[derive(Debug)]
 pub struct Sendable<T>(NonNull<T>);
 
 impl<'a, T> Sendable<T> {
