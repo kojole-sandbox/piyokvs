@@ -1,6 +1,4 @@
-use std::collections::{HashMap, VecDeque};
-use std::thread;
-use std::time::Duration;
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use crossbeam_channel::{Receiver, Sender};
 
@@ -42,6 +40,8 @@ type ResponseQueue = VecDeque<Option<Sender<DataResponse>>>;
 
 pub struct Buffer {
     io_req_tx: Sender<IoRequest>,
+    /// Issuing I/O keys
+    io_req_keys: HashSet<u32>,
     /// Mapping of key to queue of requesting clients
     data_res_queues: HashMap<u32, ResponseQueue>,
     cache: Cache<u32, u64>,
@@ -51,6 +51,7 @@ impl Buffer {
     pub fn new(capacity: usize, threthold: usize, io_req_tx: Sender<IoRequest>) -> Buffer {
         Buffer {
             io_req_tx,
+            io_req_keys: HashSet::new(),
             data_res_queues: HashMap::with_capacity(capacity),
             cache: Cache::new(capacity, threthold),
         }
@@ -80,11 +81,9 @@ impl Buffer {
         }
 
         // Ensure that issued I/Os have finished
-        thread::sleep(Duration::from_secs(3));
-        'wait_io: loop {
+        while !self.io_req_keys.is_empty() {
             select! {
-                recv(io_res_rx, io_res) => io_res.unwrap().result.unwrap(),
-                default => break 'wait_io,
+                recv(io_res_rx, io_res) => self.handle_io_res(io_res.unwrap()),
             }
         }
 
@@ -114,12 +113,18 @@ impl Buffer {
 
                         // Evict old entry first
                         if let Some(evicting) = evicting {
-                            request_eviction(&mut self.data_res_queues, &evicting, &self.io_req_tx);
+                            request_eviction(
+                                &mut self.data_res_queues,
+                                &evicting,
+                                &self.io_req_tx,
+                                &mut self.io_req_keys,
+                            );
                         }
 
                         // Read the entry from storage
                         let req = IoRequest::read(key, Sendable::new(&entry.value));
                         self.io_req_tx.send(req);
+                        self.io_req_keys.insert(key);
                     }
                 } else {
                     // Assume that the entry is in cache
@@ -149,6 +154,7 @@ impl Buffer {
         match res.io {
             Io::Read(key) => {
                 res.result.unwrap();
+                self.io_req_keys.remove(&key);
 
                 // Respond to the requesting client
                 let queue = self.data_res_queues.get_mut(&key).unwrap();
@@ -163,6 +169,7 @@ impl Buffer {
 
             Io::Write(key) => {
                 res.result.unwrap();
+                self.io_req_keys.remove(&key);
 
                 let will_evict_other = {
                     let mut queue = self.data_res_queues.get_mut(&key).unwrap();
@@ -188,7 +195,12 @@ impl Buffer {
                 if will_evict_other {
                     // Evict other old entry
                     let evicting = self.cache.evicting_new();
-                    request_eviction(&mut self.data_res_queues, &evicting, &self.io_req_tx);
+                    request_eviction(
+                        &mut self.data_res_queues,
+                        &evicting,
+                        &self.io_req_tx,
+                        &mut self.io_req_keys,
+                    );
                 } else {
                     // Prevent HashMap from bloating
                     self.data_res_queues.remove(&key);
@@ -216,6 +228,7 @@ fn request_eviction(
     queues: &mut HashMap<u32, ResponseQueue>,
     entry: &Entry<u32, u64>,
     io_req_tx: &Sender<IoRequest>,
+    io_req_keys: &mut HashSet<u32>,
 ) {
     // Add writing lock
     let queue = queues.get_mut(&entry.key).unwrap();
@@ -223,6 +236,7 @@ fn request_eviction(
 
     let req = IoRequest::write(entry.key, Sendable::new(&entry.value));
     io_req_tx.send(req);
+    io_req_keys.insert(entry.key);
 }
 
 #[cfg(test)]

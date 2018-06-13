@@ -34,7 +34,7 @@ fn random_increments() {
 
     let buffer_thread = thread::spawn(move || {
         // Make threshold big enough
-        let mut buffer = Buffer::new(200, 10, io_req_tx);
+        let mut buffer = Buffer::new(200, 20, io_req_tx);
         buffer.start(data_req_rx, io_res_rx);
     });
 
@@ -93,7 +93,7 @@ fn random_read_and_increments() {
 
     let buffer_thread = thread::spawn(move || {
         // Make threshold big enough
-        let mut buffer = Buffer::new(200, 10, io_req_tx);
+        let mut buffer = Buffer::new(200, 20, io_req_tx);
         buffer.start(data_req_rx, io_res_rx);
     });
 
