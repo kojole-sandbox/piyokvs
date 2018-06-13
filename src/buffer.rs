@@ -51,7 +51,7 @@ impl Buffer {
     pub fn new(capacity: usize, threthold: usize, io_req_tx: Sender<IoRequest>) -> Buffer {
         Buffer {
             io_req_tx,
-            data_res_queues: HashMap::new(),
+            data_res_queues: HashMap::with_capacity(capacity),
             cache: Cache::new(capacity, threthold),
         }
     }
@@ -185,10 +185,13 @@ impl Buffer {
                     }
                 };
 
-                // Evict other old entry
                 if will_evict_other {
+                    // Evict other old entry
                     let evicting = self.cache.evicting_new();
                     request_eviction(&mut self.data_res_queues, &evicting, &self.io_req_tx);
+                } else {
+                    // Prevent HashMap from bloating
+                    self.data_res_queues.remove(&key);
                 }
             }
         }
