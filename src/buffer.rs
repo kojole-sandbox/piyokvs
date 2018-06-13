@@ -194,13 +194,14 @@ impl Buffer {
 
                 if will_evict_other {
                     // Evict other old entry
-                    let evicting = self.cache.evicting_new();
-                    request_eviction(
-                        &mut self.data_res_queues,
-                        &evicting,
-                        &self.io_req_tx,
-                        &mut self.io_req_keys,
-                    );
+                    if let Some(evicting) = self.cache.evicting_new() {
+                        request_eviction(
+                            &mut self.data_res_queues,
+                            &evicting,
+                            &self.io_req_tx,
+                            &mut self.io_req_keys,
+                        );
+                    }
                 } else {
                     // Prevent HashMap from bloating
                     self.data_res_queues.remove(&key);

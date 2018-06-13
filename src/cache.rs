@@ -123,11 +123,11 @@ where
     }
 
     /// Return next evicting entry
-    pub fn evicting_new(&mut self) -> Ref<Entry<K, V>> {
+    pub fn evicting_new(&mut self) -> Option<Ref<Entry<K, V>>> {
         if let Some(i) = self.reclaim() {
-            self.entries[i].inner.borrow()
+            Some(self.entries[i].inner.borrow())
         } else {
-            panic!("cannot evict");
+            None
         }
     }
 
@@ -356,7 +356,7 @@ mod tests {
         cache.touch(evicting_key);
         assert!(!cache.entries[i].evicting);
 
-        let key = cache.evicting_new().key;
+        let key = cache.evicting_new().unwrap().key;
         assert_eq!(key, 1);
         cache.evicting_done(key);
 
