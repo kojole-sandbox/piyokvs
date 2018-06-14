@@ -247,10 +247,10 @@ mod tests {
     use std::sync::Arc;
     use std::thread;
 
-    use crossbeam_channel::bounded;
+    use crossbeam_channel::{bounded, unbounded};
 
     use super::*;
-    use storage::mock::MockStorage;
+    use storage::MockStorage;
 
     #[test]
     fn start_ends() {
@@ -286,13 +286,13 @@ mod tests {
 
         let (data_req_tx, data_req_rx) = bounded(0);
         let (io_req_tx, io_req_rx) = bounded(0);
-        let (io_res_tx, io_res_rx) = bounded(0);
+        let (io_res_tx, io_res_rx) = unbounded();
 
         let storage_thread = {
             let data = data.clone();
             thread::spawn(move || {
-                let storage = MockStorage::new(data, io_req_rx, io_res_tx);
-                storage.start();
+                let mut storage = MockStorage::new(data);
+                storage.start(io_req_rx, io_res_tx);
             })
         };
 
@@ -337,13 +337,13 @@ mod tests {
 
         let (data_req_tx, data_req_rx) = bounded(0);
         let (io_req_tx, io_req_rx) = bounded(0);
-        let (io_res_tx, io_res_rx) = bounded(0);
+        let (io_res_tx, io_res_rx) = unbounded();
 
         let storage_thread = {
             let data = data.clone();
             thread::spawn(move || {
-                let storage = MockStorage::new(data, io_req_rx, io_res_tx);
-                storage.start();
+                let mut storage = MockStorage::new(data);
+                storage.start(io_req_rx, io_res_tx);
             })
         };
 

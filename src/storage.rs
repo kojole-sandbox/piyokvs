@@ -4,13 +4,15 @@ use std::io::prelude::*;
 use std::io::{self, SeekFrom};
 use std::mem::{size_of, transmute};
 use std::slice;
+#[cfg(test)]
+use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(test)]
+use std::sync::Arc;
 use std::thread;
 
 use crossbeam_channel::{Receiver, Sender};
 
 use ptr::Sendable;
-
-const N_THREADS: usize = 4;
 
 #[derive(Debug)]
 pub enum Io {
@@ -54,17 +56,10 @@ impl IoResponse {
 
 pub struct Storage {
     path: String,
-    req_rx: Receiver<IoRequest>,
-    res_tx: Sender<IoResponse>,
 }
 
 impl Storage {
-    pub fn new(
-        path: String,
-        n_data: u32,
-        req_rx: Receiver<IoRequest>,
-        res_tx: Sender<IoResponse>,
-    ) -> io::Result<Storage> {
+    pub fn new(path: String, n_data: u32) -> io::Result<Storage> {
         assert!(n_data > 0);
 
         {
@@ -72,20 +67,24 @@ impl Storage {
             write_zeros(&mut file, (n_data as u64) * (size_of::<u64>() as u64))?;
         }
 
-        Ok(Storage {
-            path,
-            req_rx,
-            res_tx,
-        })
+        Ok(Storage { path })
     }
 
-    pub fn start(&mut self) {
-        let mut threads = Vec::new();
+    pub fn start(
+        &mut self,
+        n_threads: usize,
+        req_rx: Receiver<IoRequest>,
+        res_tx: Sender<IoResponse>,
+    ) {
+        // If # of threads is one, the response channel must be unbounded.
+        assert!((n_threads == 1 && res_tx.capacity().is_none()) || n_threads > 1);
 
-        for _ in 0..N_THREADS {
+        let mut threads = Vec::with_capacity(n_threads);
+
+        for _ in 0..n_threads {
             let path = self.path.clone();
-            let req_rx = self.req_rx.clone();
-            let res_tx = self.res_tx.clone();
+            let req_rx = req_rx.clone();
+            let res_tx = res_tx.clone();
 
             let t = thread::spawn(move || {
                 let mut file = OpenOptions::new()
@@ -174,152 +173,30 @@ where
 }
 
 #[cfg(test)]
-pub(crate) mod mock {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use std::sync::Arc;
+pub(crate) struct MockStorage {
+    data: Arc<Vec<AtomicU64>>,
+}
 
-    use crossbeam_channel::{Receiver, Sender};
-
-    use super::*;
-
-    pub(crate) struct MockStorage {
-        data: Arc<Vec<AtomicU64>>,
-        req_rx: Receiver<IoRequest>,
-        res_tx: Sender<IoResponse>,
+#[cfg(test)]
+impl MockStorage {
+    pub(crate) fn new(data: Arc<Vec<AtomicU64>>) -> MockStorage {
+        MockStorage { data }
     }
 
-    impl MockStorage {
-        pub(crate) fn new(
-            data: Arc<Vec<AtomicU64>>,
-            req_rx: Receiver<IoRequest>,
-            res_tx: Sender<IoResponse>,
-        ) -> MockStorage {
-            MockStorage {
-                data,
-                req_rx,
-                res_tx,
-            }
-        }
+    pub(crate) fn start(&mut self, req_rx: Receiver<IoRequest>, res_tx: Sender<IoResponse>) {
+        // Response channel must be unbounded.
+        assert!(res_tx.capacity().is_none());
 
-        pub(crate) fn start(&self) {
-            let mut threads = Vec::with_capacity(N_THREADS);
-
-            for _ in 0..N_THREADS {
-                let req_rs = self.req_rx.clone();
-                let res_tx = self.res_tx.clone();
-                let data = self.data.clone();
-
-                let t = thread::spawn(move || {
-                    for mut req in req_rs {
-                        match req.io {
-                            Io::Read(key) => {
-                                *req.ptr.as_mut() = data[key as usize].load(Ordering::Relaxed);
-                            }
-                            Io::Write(key) => {
-                                data[key as usize].store(*req.ptr.as_ref(), Ordering::Relaxed);
-                            }
-                        }
-                        res_tx.send(IoResponse::new(req.io, Ok(())));
-                    }
-                });
-
-                threads.push(t);
-            }
-
-            for t in threads {
-                t.join().unwrap();
-            }
-        }
-    }
-
-    #[cfg(test)]
-    mod tests {
-        use std::iter::repeat;
-
-        use crossbeam_channel::bounded;
-
-        use super::*;
-
-        #[test]
-        fn mock_storage_single() {
-            let n_data: u32 = 100;
-            let data: Arc<Vec<AtomicU64>> = Arc::new(
-                repeat(0)
-                    .take(n_data as usize)
-                    .map(|v| AtomicU64::new(v))
-                    .collect(),
-            );
-
-            let (req_tx, req_rx) = bounded(0);
-            let (res_tx, res_rx) = bounded(0);
-
-            let storage_thread = {
-                let data = data.clone();
-                thread::spawn(move || {
-                    let storage = MockStorage::new(data, req_rx, res_tx);
-                    storage.start();
-                })
-            };
-
-            for key in 0..n_data {
-                let data = key as u64;
-                let ptr = Sendable::new(&data);
-                let req = IoRequest::write(key, ptr);
-                req_tx.send(req);
-                assert!(res_rx.recv().unwrap().result.is_ok());
-            }
-
-            drop(req_tx);
-            drop(res_rx);
-            storage_thread.join().unwrap();
-
-            for key in 0..n_data {
-                assert_eq!(data[key as usize].load(Ordering::Relaxed), key as u64);
-            }
-        }
-
-        #[test]
-        fn mock_storage_single_nonblock() {
-            let n_data: u32 = 100;
-            let data: Arc<Vec<AtomicU64>> = Arc::new(
-                repeat(0)
-                    .take(n_data as usize)
-                    .map(|v| AtomicU64::new(v))
-                    .collect(),
-            );
-
-            let (req_tx, req_rx) = bounded(0);
-            let (res_tx, res_rx) = bounded(0);
-
-            let storage_thread = {
-                let data = data.clone();
-
-                thread::spawn(move || {
-                    let storage = MockStorage::new(data, req_rx, res_tx);
-                    storage.start();
-                })
-            };
-
-            let writer = thread::spawn(move || {
-                let data: Vec<u64> = (0..n_data as u64).collect();
-                for key in 0..n_data {
-                    let ptr = Sendable::new(&data[key as usize]);
-                    let req = IoRequest::write(key, ptr);
-                    req_tx.send(req);
+        for mut req in req_rx {
+            match req.io {
+                Io::Read(key) => {
+                    *req.ptr.as_mut() = self.data[key as usize].load(Ordering::Relaxed);
                 }
-            });
-
-            for _ in 0..n_data {
-                assert!(res_rx.recv().unwrap().result.is_ok());
+                Io::Write(key) => {
+                    self.data[key as usize].store(*req.ptr.as_ref(), Ordering::Relaxed);
+                }
             }
-            drop(res_rx);
-
-            writer.join().unwrap();
-            storage_thread.join().unwrap();
-
-            for key in 0..n_data {
-                assert_eq!(data[key as usize].load(Ordering::Relaxed), key as u64);
-            }
+            res_tx.send(IoResponse::new(req.io, Ok(())));
         }
     }
 }
@@ -327,8 +204,10 @@ pub(crate) mod mock {
 #[cfg(test)]
 mod tests {
     use std::io::Cursor;
+    use std::iter::repeat;
+    use std::thread::JoinHandle;
 
-    use crossbeam_channel::bounded;
+    use crossbeam_channel::{bounded, unbounded};
 
     use super::*;
 
@@ -363,123 +242,102 @@ mod tests {
         assert_eq!(&writer, &[0u8; size_of::<u64>()]);
     }
 
-    #[test]
-    fn storage_single() {
-        let n_data: u32 = 10000;
-
-        let (req_tx, req_rx) = bounded(0);
-        let (res_tx, res_rx) = bounded(0);
-
-        let storage_thread = thread::spawn(move || {
-            let mut storage =
-                Storage::new("tmp/storage_1.db".to_string(), n_data, req_rx, res_tx).unwrap();
-            storage.start();
-        });
-
-        {
-            let req_tx = req_tx.clone();
-            let res_rx = res_rx.clone();
-
-            for key in 0..n_data {
-                let data = key as u64;
-                let ptr = Sendable::new(&data);
-                let req = IoRequest::write(key, ptr);
-                req_tx.send(req);
-                assert!(res_rx.recv().unwrap().result.is_ok());
-            }
-        };
-
+    fn assert_data(n_data: u32, req_tx: Sender<IoRequest>, res_rx: Receiver<IoResponse>) {
         for key in 0..n_data {
             let mut data = u64::max_value();
-            let ptr = Sendable::new(&mut data);
-            let req = IoRequest::read(key, ptr);
-            req_tx.send(req);
+            req_tx.send(IoRequest::read(key, Sendable::new(&mut data)));
             assert!(res_rx.recv().unwrap().result.is_ok());
             assert_eq!(data, key as u64);
         }
+    }
+
+    fn spawn_writer(
+        start: u64,
+        count: usize,
+        req_tx: Sender<IoRequest>,
+        res_rx: Option<Receiver<IoResponse>>,
+    ) -> JoinHandle<()> {
+        thread::spawn(move || {
+            let data: Vec<u64> = (start..).take(count).collect();
+            for i in 0..data.len() {
+                req_tx.send(IoRequest::write(data[i] as u32, Sendable::new(&data[i])));
+
+                if let Some(ref res_rx) = res_rx {
+                    assert!(res_rx.recv().unwrap().result.is_ok());
+                }
+            }
+        })
+    }
+
+    #[test]
+    fn single_req_single_io() {
+        let n_data: u32 = 10000;
+
+        let (req_tx, req_rx) = bounded(0);
+        let (res_tx, res_rx) = unbounded();
+
+        let storage_thread = thread::spawn(move || {
+            let mut storage = Storage::new("tmp/storage_1.db".to_string(), n_data).unwrap();
+            storage.start(1, req_rx, res_tx);
+        });
+
+        let writer = spawn_writer(0, n_data as usize, req_tx.clone(), Some(res_rx.clone()));
+        writer.join().unwrap();
+
+        assert_data(n_data, req_tx.clone(), res_rx.clone());
 
         drop(req_tx);
         storage_thread.join().unwrap();
     }
 
     #[test]
-    fn storage_single_nonblock() {
+    fn single_nonblock_req_single_io() {
         let n_data: u32 = 100;
 
         let (req_tx, req_rx) = bounded(0);
-        let (res_tx, res_rx) = bounded(0);
+        let (res_tx, res_rx) = unbounded();
 
         let storage_thread = thread::spawn(move || {
-            let mut storage =
-                Storage::new("tmp/storage_2.db".to_string(), n_data, req_rx, res_tx).unwrap();
-            storage.start();
+            let mut storage = Storage::new("tmp/storage_2.db".to_string(), n_data).unwrap();
+            storage.start(1, req_rx, res_tx);
         });
 
-        let writer = {
-            let req_tx = req_tx.clone();
-
-            thread::spawn(move || {
-                let data: Vec<u64> = (0..n_data as u64).collect();
-                for key in 0..n_data {
-                    let ptr = Sendable::new(&data[key as usize]);
-                    let req = IoRequest::write(key, ptr);
-                    req_tx.send(req);
-                }
-            })
-        };
-
+        let writer = spawn_writer(0, n_data as usize, req_tx.clone(), None);
         for _ in 0..n_data {
             assert!(res_rx.recv().unwrap().result.is_ok());
         }
         writer.join().unwrap();
 
-        for key in 0..n_data {
-            let mut data = u64::max_value();
-            let ptr = Sendable::new(&mut data);
-            let req = IoRequest::read(key, ptr);
-            req_tx.send(req);
-            assert!(res_rx.recv().unwrap().result.is_ok());
-            assert_eq!(data, key as u64);
-        }
+        assert_data(n_data, req_tx.clone(), res_rx.clone());
 
         drop(req_tx);
         storage_thread.join().unwrap();
     }
 
     #[test]
-    fn storage_concurrent() {
+    fn concurrent_req_single_io() {
         let n_writers: u32 = 10;
         let n_data: u32 = 10000;
         let n_data_per_writer = n_data / n_writers;
 
         let (req_tx, req_rx) = bounded(0);
-        let (res_tx, res_rx) = bounded(0);
+        let (res_tx, res_rx) = unbounded();
 
         let storage_thread = thread::spawn(move || {
-            let mut storage =
-                Storage::new("tmp/storage_3.db".to_string(), n_data, req_rx, res_tx).unwrap();
-            storage.start();
+            let mut storage = Storage::new("tmp/storage_3.db".to_string(), n_data).unwrap();
+            storage.start(1, req_rx, res_tx);
         });
 
-        let mut writers = Vec::with_capacity(n_writers as usize);
-        for i in 0..n_writers {
-            let req_tx = req_tx.clone();
-
-            let t = thread::spawn(move || {
-                let data: Vec<u64> = ((i * n_data_per_writer) as u64..)
-                    .take(n_data_per_writer as usize)
-                    .collect();
-
-                for j in 0..n_data_per_writer {
-                    let key = data[j as usize] as u32;
-                    let ptr = Sendable::new(&data[j as usize]);
-                    let req = IoRequest::write(key, ptr);
-                    req_tx.send(req);
-                }
-            });
-
-            writers.push(t);
-        }
+        let writers = (0..n_writers)
+            .map(|i| {
+                spawn_writer(
+                    (i * n_data_per_writer) as u64,
+                    n_data_per_writer as usize,
+                    req_tx.clone(),
+                    None,
+                )
+            })
+            .collect::<Vec<_>>();
 
         for _ in 0..n_data {
             assert!(res_rx.recv().unwrap().result.is_ok());
@@ -489,16 +347,115 @@ mod tests {
             writer.join().unwrap();
         }
 
-        for key in 0..n_data {
-            let mut data = u64::max_value();
-            let ptr = Sendable::new(&mut data);
-            let req = IoRequest::read(key, ptr);
-            req_tx.send(req);
-            assert!(res_rx.recv().unwrap().result.is_ok());
-            assert_eq!(data, key as u64);
-        }
+        assert_data(n_data, req_tx.clone(), res_rx.clone());
 
         drop(req_tx);
         storage_thread.join().unwrap();
+    }
+
+    #[test]
+    fn concurrent_req_concurrent_io() {
+        let n_writers: u32 = 10;
+        let n_data: u32 = 10000;
+        let n_data_per_writer = n_data / n_writers;
+
+        let (req_tx, req_rx) = bounded(0);
+        let (res_tx, res_rx) = bounded(0);
+
+        let storage_thread = thread::spawn(move || {
+            let mut storage = Storage::new("tmp/storage_4.db".to_string(), n_data).unwrap();
+            storage.start(4, req_rx, res_tx);
+        });
+
+        let writers = (0..n_writers)
+            .map(|i| {
+                spawn_writer(
+                    (i * n_data_per_writer) as u64,
+                    n_data_per_writer as usize,
+                    req_tx.clone(),
+                    None,
+                )
+            })
+            .collect::<Vec<_>>();
+
+        for _ in 0..n_data {
+            assert!(res_rx.recv().unwrap().result.is_ok());
+        }
+
+        for writer in writers {
+            writer.join().unwrap();
+        }
+
+        assert_data(n_data, req_tx.clone(), res_rx.clone());
+
+        drop(req_tx);
+        storage_thread.join().unwrap();
+    }
+
+    #[test]
+    fn mock_single_req_single_io() {
+        let n_data: u32 = 100;
+        let data: Arc<Vec<AtomicU64>> = Arc::new(
+            repeat(0)
+                .take(n_data as usize)
+                .map(|v| AtomicU64::new(v))
+                .collect(),
+        );
+
+        let (req_tx, req_rx) = bounded(0);
+        let (res_tx, res_rx) = unbounded();
+
+        let storage_thread = {
+            let data = data.clone();
+            thread::spawn(move || {
+                let mut storage = MockStorage::new(data);
+                storage.start(req_rx, res_tx);
+            })
+        };
+
+        let writer = spawn_writer(0, n_data as usize, req_tx, Some(res_rx));
+        writer.join().unwrap();
+
+        storage_thread.join().unwrap();
+
+        for key in 0..n_data {
+            assert_eq!(data[key as usize].load(Ordering::Relaxed), key as u64);
+        }
+    }
+
+    #[test]
+    fn mock_single_nonblock_req_single_io() {
+        let n_data: u32 = 100;
+        let data: Arc<Vec<AtomicU64>> = Arc::new(
+            repeat(0)
+                .take(n_data as usize)
+                .map(|v| AtomicU64::new(v))
+                .collect(),
+        );
+
+        let (req_tx, req_rx) = bounded(0);
+        let (res_tx, res_rx) = unbounded();
+
+        let storage_thread = {
+            let data = data.clone();
+            thread::spawn(move || {
+                let mut storage = MockStorage::new(data);
+                storage.start(req_rx, res_tx);
+            })
+        };
+
+        let writer = spawn_writer(0, n_data as usize, req_tx, None);
+
+        for _ in 0..n_data {
+            assert!(res_rx.recv().unwrap().result.is_ok());
+        }
+        drop(res_rx);
+
+        writer.join().unwrap();
+        storage_thread.join().unwrap();
+
+        for key in 0..n_data {
+            assert_eq!(data[key as usize].load(Ordering::Relaxed), key as u64);
+        }
     }
 }
