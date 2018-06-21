@@ -1,49 +1,57 @@
-// use std::collections::{HashMap, HashSet, VecDeque};
-
-// use crossbeam_channel::{Receiver, Sender};
-
-// use cache::{Cache, Entry, LruIterator};
-// use ptr::Sendable;
-// use storage::{Io, IoRequest, IoResponse};
-
 use std::io;
-use std::mem::uninitialized;
 use std::ptr::NonNull;
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 
+use cache::Cache;
+use entry::{Entry, State};
 use storage::Storage;
 
 pub trait Buffer {
-    fn get(&self, key: u32) -> io::Result<u64>;
-    fn set(&self, key: u32, value: u64) -> io::Result<()>;
+    fn lock(&self, key: u32) -> io::Result<MutexGuard<Entry<u32, u64>>>;
 }
 
 pub struct BufferImpl {
+    cache: Box<Cache<u32, u64> + Send + Sync>,
     storage: Mutex<Box<Storage + Send>>,
 }
 
 impl BufferImpl {
-    pub fn new(storage: Box<Storage + Send>) -> BufferImpl {
+    pub fn new(
+        cache: Box<Cache<u32, u64> + Send + Sync>,
+        storage: Box<Storage + Send>,
+    ) -> BufferImpl {
         BufferImpl {
+            cache,
             storage: Mutex::new(storage),
         }
     }
 }
 
 impl Buffer for BufferImpl {
-    fn get(&self, key: u32) -> io::Result<u64> {
-        unsafe {
-            let mut data: u64 = uninitialized();
-            let dst = NonNull::new_unchecked(&mut data);
-            self.storage.lock().unwrap().read(key, dst)?;
-            Ok(data)
-        }
-    }
+    fn lock(&self, key: u32) -> io::Result<MutexGuard<Entry<u32, u64>>> {
+        let mut entry = self.cache.lock(key);
 
-    fn set(&self, key: u32, value: u64) -> io::Result<()> {
-        let mut value = value;
-        let src = unsafe { NonNull::new_unchecked(&mut value) };
-        self.storage.lock().unwrap().write(key, src)
+        match entry.state {
+            State::Unloaded => {
+                // Read
+                let ptr = unsafe { NonNull::new_unchecked(&mut entry.value) };
+                self.storage.lock().unwrap().read(key, ptr)?;
+                entry.state = State::Fresh;
+            }
+
+            State::Stale(stale_key) => {
+                // Write back and read
+                let ptr = unsafe { NonNull::new_unchecked(&mut entry.value) };
+                let mut storage = self.storage.lock().unwrap();
+                storage.write(stale_key, ptr)?;
+                storage.read(key, ptr)?;
+                entry.state = State::Fresh;
+            }
+
+            _ => {}
+        }
+
+        Ok(entry)
     }
 }
 
@@ -52,39 +60,43 @@ mod tests {
     use std::sync::Arc;
     use std::thread;
 
+    use cache::SingleCache;
     use storage::StorageMock;
 
     use super::*;
 
     fn assert_data(n_data: u32, buffer: &impl Buffer) {
         for key in 0..n_data {
-            assert_eq!(buffer.get(key).unwrap(), key as u64);
+            assert_eq!(buffer.lock(key).unwrap().value, key as u64);
         }
     }
 
     #[test]
-    fn single_write() {
+    fn single_buffer() {
         let n_data: u32 = 10000;
 
-        let storage = StorageMock::new();
-        let buffer = BufferImpl::new(Box::new(storage));
+        let cache = Box::new(SingleCache::new());
+        let storage = Box::new(StorageMock::new());
+        let buffer = BufferImpl::new(cache, storage);
 
         for key in 0..n_data {
-            buffer.set(key, key as u64).unwrap();
+            let mut entry = buffer.lock(key).unwrap();
+            entry.value = key as u64;
+            entry.state = State::Dirty;
         }
 
         assert_data(n_data, &buffer);
     }
 
     #[test]
-    fn concurrent_writes() {
+    fn threaded_single_buffer() {
         let n_data: u32 = 10000;
         let n_writers: u32 = 10;
         let n_data_per_writer = n_data / n_writers;
 
-        let storage = StorageMock::new();
-        let buffer = BufferImpl::new(Box::new(storage));
-        let buffer = Arc::new(buffer);
+        let cache = Box::new(SingleCache::new());
+        let storage = Box::new(StorageMock::new());
+        let buffer = Arc::new(BufferImpl::new(cache, storage));
 
         let mut writers = Vec::with_capacity(n_writers as usize);
 
@@ -95,9 +107,12 @@ mod tests {
 
             let t = thread::spawn(move || {
                 for key in (start..).take(count) {
-                    buffer.set(key, key as u64).unwrap();
+                    let mut entry = buffer.lock(key).unwrap();
+                    entry.value = key as u64;
+                    entry.state = State::Dirty;
                 }
             });
+
             writers.push(t);
         }
 

@@ -8,4 +8,5 @@ pub mod buffer;
 pub mod cache;
 pub mod client;
 pub mod ptr;
+pub mod entry;
 pub mod storage;

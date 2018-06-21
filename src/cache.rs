@@ -1,242 +1,43 @@
-use std::cell::{Ref, RefCell, RefMut};
-use std::cmp::Eq;
-use std::collections::{HashMap, VecDeque};
-use std::hash::Hash;
+use std::sync::{Mutex, MutexGuard};
 
-#[derive(Debug)]
-pub struct Entry<K, V> {
-    pub key: K,
-    pub value: V,
-    pub dirty: bool,
+use entry::{Entry, State};
+
+pub trait Cache<K, V> {
+    fn lock(&self, key: K) -> MutexGuard<Entry<K, V>>;
 }
 
-impl<K, V> Entry<K, V>
+pub struct SingleCache<K, V> {
+    entry: Mutex<Entry<K, V>>,
+}
+
+impl<K, V> SingleCache<K, V>
 where
+    K: Default,
     V: Default,
 {
-    pub fn new(key: K) -> Entry<K, V> {
-        Entry {
-            key,
-            value: Default::default(),
-            dirty: false,
+    pub fn new() -> SingleCache<K, V> {
+        SingleCache {
+            entry: Mutex::new(Default::default()),
         }
     }
 }
 
-struct CacheEntry<K, V> {
-    inner: RefCell<Entry<K, V>>,
-    next: Option<usize>,
-    prev: Option<usize>,
-    evicting: bool,
-}
-
-impl<K, V> CacheEntry<K, V>
+impl<K, V> Cache<K, V> for SingleCache<K, V>
 where
-    V: Default,
+    K: Copy + PartialEq,
 {
-    fn new(key: K) -> CacheEntry<K, V> {
-        CacheEntry {
-            inner: RefCell::new(Entry::new(key)),
-            next: None,
-            prev: None,
-            evicting: false,
-        }
-    }
-}
-
-pub struct Cache<K, V> {
-    capacity: usize,
-    threshold: usize,
-    head: Option<usize>,
-    tail: Option<usize>,
-    keys: HashMap<K, usize>,
-    entries: Vec<CacheEntry<K, V>>,
-    evicted_indices: VecDeque<usize>,
-}
-
-impl<K, V> Cache<K, V>
-where
-    K: Copy + Eq + Hash,
-    V: Default,
-{
-    pub fn new(capacity: usize, threshold: usize) -> Cache<K, V> {
-        assert!(capacity >= 2);
-        assert!(threshold >= 1);
-        assert!(capacity > threshold);
-
-        Cache {
-            capacity,
-            threshold,
-            head: None,
-            tail: None,
-            keys: HashMap::with_capacity(capacity),
-            entries: Vec::with_capacity(capacity),
-            evicted_indices: VecDeque::new(),
-        }
-    }
-
-    pub fn contains(&self, key: K) -> bool {
-        self.keys.contains_key(&key)
-    }
-
-    /// Return new entry of the id and one to be evicted
-    pub fn get_with_evicting(&mut self, key: K) -> (RefMut<Entry<K, V>>, Option<Ref<Entry<K, V>>>) {
-        assert!(!self.keys.contains_key(&key));
-
-        let new_i = self.entry_new(key);
-        self.keys.insert(key, new_i);
-        self.push_front(new_i);
-
-        let n_free_entries = self.capacity - self.entries.len() + self.evicted_indices.len();
-        let evicting_i = if n_free_entries < self.threshold {
-            self.reclaim()
-        } else {
-            None
-        };
-
-        if let Some(evicting_i) = evicting_i {
-            (
-                self.entries[new_i].inner.borrow_mut(),
-                Some(self.entries[evicting_i].inner.borrow()),
-            )
-        } else {
-            (self.entries[new_i].inner.borrow_mut(), None)
-        }
-    }
-
-    /// Return entry of the id without touching
-    pub fn get_untouched(&self, key: K) -> RefMut<Entry<K, V>> {
-        let i = *self.keys.get(&key).unwrap();
-        self.entries[i].inner.borrow_mut()
-    }
-
-    pub fn touch(&mut self, key: K) {
-        let i = *self.keys.get(&key).unwrap();
-        if i != self.head.unwrap() {
-            // Remove evicting flag
-            self.entries[i].evicting = false;
-
-            // Move to head
-            self.unlink(i);
-            self.push_front(i);
-        }
-    }
-
-    /// Return next evicting entry
-    pub fn evicting_new(&mut self) -> Option<Ref<Entry<K, V>>> {
-        if let Some(i) = self.reclaim() {
-            Some(self.entries[i].inner.borrow())
-        } else {
-            None
-        }
-    }
-
-    /// Confirm evicting
-    pub fn evicting_done(&mut self, key: K) {
-        let i = self.keys.remove(&key).unwrap();
-        self.unlink(i);
-        self.entries[i].evicting = false;
-        self.evicted_indices.push_back(i);
-    }
-
-    fn entry_new(&mut self, key: K) -> usize {
-        let len = self.entries.len();
-        if len < self.capacity {
-            // Add new entry
-            self.entries.push(CacheEntry::new(key));
-            return len;
-        } else if len == self.capacity {
-            // Reuse evicted entry
-            if let Some(i) = self.evicted_indices.pop_front() {
-                *self.entries[i].inner.borrow_mut() = Entry::new(key);
-                return i;
+    fn lock(&self, key: K) -> MutexGuard<Entry<K, V>> {
+        let mut entry = self.entry.lock().unwrap();
+        if key != entry.key {
+            match entry.state {
+                State::Fresh => entry.state = State::Unloaded,
+                State::Dirty => entry.state = State::Stale(entry.key),
+                State::Stale(_) => panic!("stale entry must be evicted"),
+                _ => {}
             }
+            entry.key = key;
         }
-        panic!("no space");
-    }
-
-    fn unlink(&mut self, i: usize) {
-        let next = self.entries[i].next;
-        let prev = self.entries[i].prev;
-
-        if i == self.head.unwrap() {
-            self.head = next;
-        } else {
-            self.entries[prev.unwrap()].next = next;
-        }
-
-        if i == self.tail.unwrap() {
-            self.tail = prev;
-        } else {
-            self.entries[next.unwrap()].prev = prev;
-        }
-    }
-
-    fn push_front(&mut self, i: usize) {
-        let new_head = Some(i);
-        if self.tail.is_none() {
-            self.tail = new_head;
-        } else {
-            self.entries[i].next = self.head;
-            self.entries[i].prev = None;
-            if let Some(head_i) = self.head {
-                self.entries[head_i].prev = new_head;
-            }
-        }
-        self.head = new_head;
-    }
-
-    /// Reclaim one entry space
-    ///
-    /// If the entry in question is dirty, mark as evicting and return it.
-    /// Otherwise treat it as evicted.
-    fn reclaim(&mut self) -> Option<usize> {
-        let mut pos = self.tail;
-        while let Some(i) = pos {
-            // Find first entry which is not marked as evicting
-            if !self.entries[i].evicting {
-                // If it's dirty, mark as evicting and return it
-                if self.entries[i].inner.borrow().dirty {
-                    self.entries[i].evicting = true;
-                    return Some(i);
-                }
-
-                // Otherwise treat it as evicted
-                self.keys.remove(&self.entries[i].inner.borrow().key);
-                self.unlink(i);
-                self.evicted_indices.push_back(i);
-                return None;
-            }
-            pos = self.entries[i].prev;
-        }
-        None
-    }
-}
-
-pub struct LruIterator<'a, K: 'a, V: 'a> {
-    cache: &'a Cache<K, V>,
-    pos: Option<usize>,
-}
-
-impl<'a, K, V> LruIterator<'a, K, V> {
-    pub fn new(cache: &'a Cache<K, V>) -> LruIterator<'a, K, V> {
-        LruIterator {
-            cache,
-            pos: cache.tail,
-        }
-    }
-}
-
-impl<'a, K, V> Iterator for LruIterator<'a, K, V> {
-    type Item = &'a RefCell<Entry<K, V>>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if let Some(i) = self.pos {
-            self.pos = self.cache.entries[i].prev;
-            Some(&self.cache.entries[i].inner)
-        } else {
-            None
-        }
+        entry
     }
 }
 
@@ -244,126 +45,24 @@ impl<'a, K, V> Iterator for LruIterator<'a, K, V> {
 mod tests {
     use super::*;
 
-    fn lru_keys<K: Copy, V>(cache: &Cache<K, V>) -> Vec<K> {
-        LruIterator::new(cache).map(|r| r.borrow().key).collect()
-    }
+    #[test]
+    fn single_cache_state_changes() {
+        let cache: SingleCache<i32, i32> = SingleCache::new();
 
-    fn default_cache() -> Cache<usize, bool> {
-        Cache::new(4, 1)
-    }
-
-    fn get(cache: &mut Cache<usize, bool>, key: usize) -> Option<usize> {
-        let (_, evicting) = cache.get_with_evicting(key);
-        evicting.map(|e| e.key)
-    }
-
-    fn set(cache: &mut Cache<usize, bool>, key: usize) -> Option<usize> {
-        let (mut entry, evicting) = cache.get_with_evicting(key);
-        entry.dirty = true;
-        entry.value = true;
-        evicting.map(|e| e.key)
-    }
-
-    /// Update cahce with `input_keys` and return evicted keys
-    fn update_cache(cache: &mut Cache<usize, bool>, input_keys: &[usize]) -> Vec<usize> {
-        let mut evicted_keys = Vec::new();
-
-        for key in input_keys {
-            if cache.contains(*key) {
-                cache.touch(*key);
-                continue;
-            }
-
-            if let Some(key) = set(cache, *key) {
-                cache.evicting_done(key);
-                evicted_keys.push(key);
-            }
+        {
+            let mut guard = cache.lock(1);
+            assert_eq!(guard.state, State::Unloaded);
+            guard.state = State::Fresh;
         }
+        assert_eq!(cache.lock(1).state, State::Fresh);
 
-        evicted_keys
-    }
-
-    #[test]
-    fn no_evict() {
-        let mut cache = default_cache();
-
-        let input_keys = &[0, 1, 2, 3, 4, 5, 6];
-        for key in input_keys {
-            assert!(get(&mut cache, *key).is_none());
+        {
+            let mut guard = cache.lock(2);
+            assert_eq!(guard.state, State::Unloaded);
+            guard.state = State::Dirty;
         }
+        assert_eq!(cache.lock(2).state, State::Dirty);
 
-        assert_eq!(lru_keys(&cache), [4, 5, 6]);
-    }
-
-    #[test]
-    fn evict() {
-        let mut cache = default_cache();
-
-        let input_keys = &[0, 1, 2, 3, 4, 5, 6];
-        let evicted_keys = update_cache(&mut cache, input_keys);
-
-        assert_eq!(evicted_keys, [0, 1, 2, 3]);
-        assert_eq!(lru_keys(&cache), [4, 5, 6]);
-    }
-
-    #[test]
-    fn touch_head() {
-        let mut cache = default_cache();
-
-        let input_keys = &[0, 1, 2, 3, 3, 4, 5, 6];
-        let evicted_keys = update_cache(&mut cache, input_keys);
-
-        assert_eq!(evicted_keys, [0, 1, 2, 3]);
-        assert_eq!(lru_keys(&cache), [4, 5, 6]);
-    }
-
-    #[test]
-    fn touch_inbetween() {
-        let mut cache = default_cache();
-
-        let input_keys = &[0, 1, 2, 3, 2, 4, 5, 6];
-        let evicted_keys = update_cache(&mut cache, input_keys);
-
-        assert_eq!(evicted_keys, [0, 1, 3, 2]);
-        assert_eq!(lru_keys(&cache), [4, 5, 6]);
-    }
-
-    #[test]
-    fn touch_tail() {
-        let mut cache = default_cache();
-
-        let input_keys = &[0, 1, 2, 3, 1, 4, 5, 6];
-        let evicted_keys = update_cache(&mut cache, input_keys);
-
-        assert_eq!(evicted_keys, [0, 2, 3, 1]);
-        assert_eq!(lru_keys(&cache), [4, 5, 6]);
-    }
-
-    #[test]
-    fn touch_evicting() {
-        let mut cache = default_cache();
-
-        assert!(set(&mut cache, 0).is_none());
-        assert!(set(&mut cache, 1).is_none());
-        assert!(set(&mut cache, 2).is_none());
-
-        let evicting_key = set(&mut cache, 3).unwrap();
-        assert_eq!(evicting_key, 0);
-
-        let i = *cache.keys.get(&evicting_key).unwrap();
-        assert!(cache.entries[i].evicting);
-
-        cache.touch(evicting_key);
-        assert!(!cache.entries[i].evicting);
-
-        let key = cache.evicting_new().unwrap().key;
-        assert_eq!(key, 1);
-        cache.evicting_done(key);
-
-        let evicting_key = set(&mut cache, 4).unwrap();
-        assert_eq!(evicting_key, 2);
-        cache.evicting_done(evicting_key);
-
-        assert_eq!(lru_keys(&cache), [3, 0, 4]);
+        assert_eq!(cache.lock(3).state, State::Stale(2));
     }
 }

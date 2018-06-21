@@ -118,7 +118,7 @@ impl StorageMock {
 #[cfg(test)]
 impl Storage for StorageMock {
     fn read(&mut self, key: u32, mut dst: NonNull<u64>) -> io::Result<()> {
-        unsafe { *dst.as_mut() = *self.data.get(&key).unwrap() };
+        unsafe { *dst.as_mut() = *self.data.entry(key).or_insert(0) };
         Ok(())
     }
 
