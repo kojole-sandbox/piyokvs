@@ -3,8 +3,14 @@ use std::ptr::NonNull;
 use std::sync::{Mutex, MutexGuard};
 
 use cache::Cache;
-use entry::{Entry, State};
+use entry::{Entry, Lazy, State};
 use storage::Storage;
+
+impl Lazy for u64 {
+    fn init(&mut self) {
+        *self = 0;
+    }
+}
 
 pub trait Buffer {
     fn lock(&self, key: u32) -> io::Result<MutexGuard<Entry<u32, u64>>>;
@@ -60,7 +66,7 @@ mod tests {
     use std::sync::Arc;
     use std::thread;
 
-    use cache::SingleCache;
+    use cache::{LruCache, SingleCache};
     use storage::StorageMock;
 
     use super::*;
@@ -95,6 +101,58 @@ mod tests {
         let n_data_per_writer = n_data / n_writers;
 
         let cache = Box::new(SingleCache::new());
+        let storage = Box::new(StorageMock::new());
+        let buffer = Arc::new(BufferImpl::new(cache, storage));
+
+        let mut writers = Vec::with_capacity(n_writers as usize);
+
+        for i in 0..n_writers {
+            let buffer = buffer.clone();
+            let start = i * n_data_per_writer;
+            let count = n_data_per_writer as usize;
+
+            let t = thread::spawn(move || {
+                for key in (start..).take(count) {
+                    let mut entry = buffer.lock(key).unwrap();
+                    entry.value = key as u64;
+                    entry.state = State::Dirty;
+                }
+            });
+
+            writers.push(t);
+        }
+
+        for t in writers {
+            t.join().unwrap();
+        }
+
+        assert_data(n_data, &*buffer);
+    }
+
+    #[test]
+    fn single_lru_buffer() {
+        let n_data: u32 = 10000;
+
+        let cache = Box::new(LruCache::new(100));
+        let storage = Box::new(StorageMock::new());
+        let buffer = BufferImpl::new(cache, storage);
+
+        for key in 0..n_data {
+            let mut entry = buffer.lock(key).unwrap();
+            entry.value = key as u64;
+            entry.state = State::Dirty;
+        }
+
+        assert_data(n_data, &buffer);
+    }
+
+    #[test]
+    fn threaded_lru_bufer() {
+        let n_data: u32 = 10000;
+        let n_writers: u32 = 10;
+        let n_data_per_writer = n_data / n_writers;
+
+        let cache = Box::new(LruCache::new(100));
         let storage = Box::new(StorageMock::new());
         let buffer = Arc::new(BufferImpl::new(cache, storage));
 

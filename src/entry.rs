@@ -1,5 +1,3 @@
-use std::mem::uninitialized;
-
 pub trait Lazy {
     fn init(&mut self);
 }
@@ -20,27 +18,15 @@ pub struct Entry<K, V> {
     pub state: State<K>,
 }
 
-impl<K, V> Entry<K, V>
-where
-    V: Default,
-{
-    pub fn new(key: K) -> Entry<K, V> {
-        Entry {
-            key,
-            value: Default::default(),
-            state: State::Unloaded,
-        }
-    }
-}
-
 impl<K, V> Default for Entry<K, V>
 where
     K: Default,
+    V: Default,
 {
     fn default() -> Entry<K, V> {
         Entry {
             key: Default::default(),
-            value: unsafe { uninitialized() },
+            value: Default::default(),
             state: State::Uninitialized,
         }
     }
@@ -48,10 +34,10 @@ where
 
 impl<K, V> Lazy for Entry<K, V>
 where
-    V: Default,
+    V: Lazy,
 {
     fn init(&mut self) {
-        self.value = Default::default();
+        self.value.init();
         self.state = State::Unloaded;
     }
 }
