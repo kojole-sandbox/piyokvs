@@ -41,7 +41,6 @@ impl Buffer for BufferImpl {
             State::Unloaded => {
                 // Read
                 self.storage.lock().unwrap().read(key, entry.as_ptr())?;
-                entry.state = State::Fresh;
             }
 
             State::Stale(stale_key) => {
@@ -50,7 +49,6 @@ impl Buffer for BufferImpl {
                 let mut storage = self.storage.lock().unwrap();
                 storage.write(stale_key, ptr)?;
                 storage.read(key, ptr)?;
-                entry.state = State::Fresh;
             }
 
             _ => {}
@@ -64,7 +62,6 @@ impl Buffer for BufferImpl {
         let mut storage = self.storage.lock().unwrap();
         for mut entry in dirty_entries {
             storage.write(entry.key, entry.as_ptr())?;
-            entry.state = State::Fresh;
         }
         storage.sync()
     }

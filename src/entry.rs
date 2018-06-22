@@ -22,6 +22,11 @@ pub struct Entry<K, V> {
 
 impl<K, V> Entry<K, V> {
     pub fn as_ptr(&mut self) -> NonNull<V> {
+        match self.state {
+            State::Unloaded | State::Dirty | State::Stale(_) => {}
+            _ => panic!("invalid state"),
+        }
+        self.state = State::Fresh;
         unsafe { NonNull::new_unchecked(&mut self.value) }
     }
 }
