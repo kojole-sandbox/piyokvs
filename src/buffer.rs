@@ -1,5 +1,4 @@
 use std::io;
-use std::ptr::NonNull;
 use std::sync::{Mutex, MutexGuard};
 
 use cache::Cache;
@@ -41,14 +40,13 @@ impl Buffer for BufferImpl {
         match entry.state {
             State::Unloaded => {
                 // Read
-                let ptr = unsafe { NonNull::new_unchecked(&mut entry.value) };
-                self.storage.lock().unwrap().read(key, ptr)?;
+                self.storage.lock().unwrap().read(key, entry.as_ptr())?;
                 entry.state = State::Fresh;
             }
 
             State::Stale(stale_key) => {
                 // Write back and read
-                let ptr = unsafe { NonNull::new_unchecked(&mut entry.value) };
+                let ptr = entry.as_ptr();
                 let mut storage = self.storage.lock().unwrap();
                 storage.write(stale_key, ptr)?;
                 storage.read(key, ptr)?;
@@ -65,8 +63,7 @@ impl Buffer for BufferImpl {
         let dirty_entries = self.cache.dirty_entries();
         let mut storage = self.storage.lock().unwrap();
         for mut entry in dirty_entries {
-            let ptr = unsafe { NonNull::new_unchecked(&mut entry.value) };
-            storage.write(entry.key, ptr)?;
+            storage.write(entry.key, entry.as_ptr())?;
             entry.state = State::Fresh;
         }
         storage.sync()
@@ -99,8 +96,7 @@ mod tests {
 
         for key in 0..n_data {
             let mut entry = buffer.lock(key).unwrap();
-            entry.value = key as u64;
-            entry.state = State::Dirty;
+            *entry.as_mut() = key as u64;
         }
 
         assert_data(n_data, &buffer);
@@ -126,8 +122,7 @@ mod tests {
             let t = thread::spawn(move || {
                 for key in (start..).take(count) {
                     let mut entry = buffer.lock(key).unwrap();
-                    entry.value = key as u64;
-                    entry.state = State::Dirty;
+                    *entry.as_mut() = key as u64;
                 }
             });
 
@@ -153,8 +148,7 @@ mod tests {
 
         for key in 0..n_data {
             let mut entry = buffer.lock(key).unwrap();
-            entry.value = key as u64;
-            entry.state = State::Dirty;
+            *entry.as_mut() = key as u64;
         }
 
         assert_data(n_data, &buffer);
@@ -180,8 +174,7 @@ mod tests {
             let t = thread::spawn(move || {
                 for key in (start..).take(count) {
                     let mut entry = buffer.lock(key).unwrap();
-                    entry.value = key as u64;
-                    entry.state = State::Dirty;
+                    *entry.as_mut() = key as u64;
                 }
             });
 

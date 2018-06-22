@@ -38,8 +38,8 @@ fn random_increments() {
 
     let mut sum = 0;
     for key in 0..n_data {
-        let entry = buffer.lock(key).unwrap();
-        sum += entry.value;
+        let mut entry = buffer.lock(key).unwrap();
+        sum += *entry.as_ref();
     }
     assert_eq!(sum, n_data as u64);
 }
@@ -74,7 +74,7 @@ fn random_read_and_increments() {
             let mut sum = 0;
             for key in keys {
                 let entry = buffer.lock(key).unwrap();
-                sum += entry.value;
+                sum += *entry.as_ref();
             }
             sum
         });
@@ -90,7 +90,7 @@ fn random_read_and_increments() {
     let mut sum = 0;
     for key in 0..n_data {
         let entry = buffer.lock(key).unwrap();
-        sum += entry.value;
+        sum += *entry.as_ref();
     }
     assert_eq!(sum, n_data as u64);
 }

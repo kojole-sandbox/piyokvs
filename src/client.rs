@@ -4,7 +4,6 @@ use rand::distributions::Uniform;
 use rand::{thread_rng, Rng};
 
 use buffer::Buffer;
-use entry::State;
 
 pub struct Client {
     buffer: Arc<Buffer>,
@@ -20,8 +19,7 @@ impl Client {
 
         for key in thread_rng().sample_iter(&u).take(n_increments) {
             let mut entry = self.buffer.lock(key).unwrap();
-            entry.value += 1;
-            entry.state = State::Dirty;
+            *entry.as_mut() += 1;
         }
     }
 }

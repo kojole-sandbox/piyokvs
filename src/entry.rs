@@ -1,3 +1,5 @@
+use std::ptr::NonNull;
+
 pub trait Lazy {
     fn init(&mut self);
 }
@@ -16,6 +18,33 @@ pub struct Entry<K, V> {
     pub key: K,
     pub value: V,
     pub state: State<K>,
+}
+
+impl<K, V> Entry<K, V> {
+    pub fn as_ptr(&mut self) -> NonNull<V> {
+        unsafe { NonNull::new_unchecked(&mut self.value) }
+    }
+}
+
+impl<K, V> AsRef<V> for Entry<K, V> {
+    fn as_ref(&self) -> &V {
+        match self.state {
+            State::Fresh | State::Dirty => {}
+            _ => panic!("invalid state"),
+        }
+        &self.value
+    }
+}
+
+impl<K, V> AsMut<V> for Entry<K, V> {
+    fn as_mut(&mut self) -> &mut V {
+        match self.state {
+            State::Fresh | State::Dirty => {}
+            _ => panic!("invalid state"),
+        }
+        self.state = State::Dirty;
+        &mut self.value
+    }
 }
 
 impl<K, V> Default for Entry<K, V>
