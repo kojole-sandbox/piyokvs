@@ -6,6 +6,7 @@ use entry::{Entry, Lazy, State};
 
 pub trait Cache<K, V> {
     fn lock(&self, key: K) -> MutexGuard<Entry<K, V>>;
+    fn dirty_entries(&self) -> Vec<MutexGuard<Entry<K, V>>>;
 }
 
 fn prepare_entry<K, V>(entry: &mut MutexGuard<Entry<K, V>>, key: K)
@@ -65,6 +66,15 @@ where
         prepare_entry(&mut entry, key);
         entry
     }
+
+    fn dirty_entries(&self) -> Vec<MutexGuard<Entry<K, V>>> {
+        let entry = self.entry.lock().unwrap();
+        if entry.state == State::Dirty {
+            vec![entry]
+        } else {
+            Vec::new()
+        }
+    }
 }
 
 pub struct LruCache<K, V> {
@@ -103,6 +113,22 @@ where
         }
         prepare_entry(&mut entry, key);
         entry
+    }
+
+    fn dirty_entries(&self) -> Vec<MutexGuard<Entry<K, V>>> {
+        let lane = self.lane.lock().unwrap();
+
+        let mut entries = Vec::with_capacity(lane.entries.len());
+
+        let iter = LruLaneIterator::new(&lane);
+        for i in iter {
+            let entry = self.entries[i].lock().unwrap();
+            if entry.state == State::Dirty {
+                entries.push(entry);
+            }
+        }
+
+        entries
     }
 }
 

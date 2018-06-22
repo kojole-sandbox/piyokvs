@@ -34,6 +34,8 @@ fn random_increments() {
         t.join().unwrap();
     }
 
+    buffer.sync().unwrap();
+
     let mut sum = 0;
     for key in 0..n_data {
         let entry = buffer.lock(key).unwrap();
@@ -82,6 +84,8 @@ fn random_read_and_increments() {
     for t in clients {
         t.join().unwrap();
     }
+
+    buffer.sync().unwrap();
 
     let mut sum = 0;
     for key in 0..n_data {

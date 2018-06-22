@@ -14,6 +14,7 @@ impl Lazy for u64 {
 
 pub trait Buffer {
     fn lock(&self, key: u32) -> io::Result<MutexGuard<Entry<u32, u64>>>;
+    fn sync(&self) -> io::Result<()>;
 }
 
 pub struct BufferImpl {
@@ -58,6 +59,17 @@ impl Buffer for BufferImpl {
         }
 
         Ok(entry)
+    }
+
+    fn sync(&self) -> io::Result<()> {
+        let dirty_entries = self.cache.dirty_entries();
+        let mut storage = self.storage.lock().unwrap();
+        for mut entry in dirty_entries {
+            let ptr = unsafe { NonNull::new_unchecked(&mut entry.value) };
+            storage.write(entry.key, ptr)?;
+            entry.state = State::Fresh;
+        }
+        storage.sync()
     }
 }
 
@@ -126,6 +138,8 @@ mod tests {
             t.join().unwrap();
         }
 
+        buffer.sync().unwrap();
+
         assert_data(n_data, &*buffer);
     }
 
@@ -177,6 +191,8 @@ mod tests {
         for t in writers {
             t.join().unwrap();
         }
+
+        buffer.sync().unwrap();
 
         assert_data(n_data, &*buffer);
     }

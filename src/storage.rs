@@ -12,6 +12,7 @@ use std::slice;
 pub trait Storage {
     fn read(&mut self, key: u32, dst: NonNull<u64>) -> io::Result<()>;
     fn write(&mut self, key: u32, src: NonNull<u64>) -> io::Result<()>;
+    fn sync(&mut self) -> io::Result<()>;
 }
 
 pub struct StorageImpl {
@@ -45,6 +46,10 @@ impl Storage for StorageImpl {
     fn write(&mut self, key: u32, src: NonNull<u64>) -> io::Result<()> {
         let pos = key as u64 * size_of::<u64>() as u64;
         write_at(&mut self.file, pos, src.as_ptr() as *const u64)
+    }
+
+    fn sync(&mut self) -> io::Result<()> {
+        self.file.sync_data()
     }
 }
 
@@ -124,6 +129,10 @@ impl Storage for StorageMock {
 
     fn write(&mut self, key: u32, src: NonNull<u64>) -> io::Result<()> {
         self.data.insert(key, unsafe { *src.as_ref() });
+        Ok(())
+    }
+
+    fn sync(&mut self) -> io::Result<()> {
         Ok(())
     }
 }
