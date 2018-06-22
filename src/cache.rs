@@ -1,6 +1,6 @@
 use std::sync::{Mutex, MutexGuard};
 
-use entry::{Entry, State};
+use entry::{Entry, Lazy, State};
 
 pub trait Cache<K, V> {
     fn lock(&self, key: K) -> MutexGuard<Entry<K, V>>;
@@ -13,7 +13,6 @@ pub struct SingleCache<K, V> {
 impl<K, V> SingleCache<K, V>
 where
     K: Default,
-    V: Default,
 {
     pub fn new() -> SingleCache<K, V> {
         SingleCache {
@@ -25,17 +24,34 @@ where
 impl<K, V> Cache<K, V> for SingleCache<K, V>
 where
     K: Copy + PartialEq,
+    V: Default,
 {
     fn lock(&self, key: K) -> MutexGuard<Entry<K, V>> {
         let mut entry = self.entry.lock().unwrap();
-        if key != entry.key {
-            match entry.state {
-                State::Fresh => entry.state = State::Unloaded,
-                State::Dirty => entry.state = State::Stale(entry.key),
-                State::Stale(_) => panic!("stale entry must be evicted"),
-                _ => {}
+
+        match entry.state {
+            State::Uninitialized => {
+                entry.init();
+                entry.key = key;
             }
-            entry.key = key;
+
+            State::Unloaded => panic!("initialized entry must be loaded"),
+
+            State::Fresh => {
+                if entry.key != key {
+                    entry.state = State::Unloaded;
+                    entry.key = key;
+                }
+            }
+
+            State::Dirty => {
+                if entry.key != key {
+                    entry.state = State::Stale(entry.key);
+                    entry.key = key;
+                }
+            }
+
+            State::Stale(_) => panic!("stale entry must be evicted"),
         }
         entry
     }

@@ -1,5 +1,12 @@
+use std::mem::uninitialized;
+
+pub trait Lazy {
+    fn init(&mut self);
+}
+
 #[derive(Debug, PartialEq)]
 pub enum State<K> {
+    Uninitialized,
     Unloaded,
     Fresh,
     Dirty,
@@ -29,13 +36,22 @@ where
 impl<K, V> Default for Entry<K, V>
 where
     K: Default,
-    V: Default,
 {
     fn default() -> Entry<K, V> {
         Entry {
             key: Default::default(),
-            value: Default::default(),
-            state: State::Unloaded,
+            value: unsafe { uninitialized() },
+            state: State::Uninitialized,
         }
+    }
+}
+
+impl<K, V> Lazy for Entry<K, V>
+where
+    V: Default,
+{
+    fn init(&mut self) {
+        self.value = Default::default();
+        self.state = State::Unloaded;
     }
 }
